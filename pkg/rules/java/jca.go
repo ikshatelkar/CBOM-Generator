@@ -1,0 +1,354 @@
+package java
+
+import (
+	"regexp"
+	"strings"
+
+	"github.com/cbom-scanner/pkg/detection"
+	"github.com/cbom-scanner/pkg/model"
+)
+
+// RegisterJCADetectionRules registers all Java Cryptography Architecture detection rules.
+func RegisterJCADetectionRules(registry *detection.RuleRegistry) {
+	for _, r := range jcaRules() {
+		registry.Register(r)
+	}
+}
+
+func jcaRules() []*detection.Rule {
+	return []*detection.Rule{
+		cipherGetInstance(),
+		messageDigestGetInstance(),
+		signatureGetInstance(),
+		macGetInstance(),
+		keyGeneratorGetInstance(),
+		keyPairGeneratorGetInstance(),
+		secretKeySpecConstructor(),
+		keyFactoryGetInstance(),
+		keyAgreementGetInstance(),
+		algorithmParameterGeneratorGetInstance(),
+		sslContextGetInstance(),
+		secretKeyFactoryGetInstance(),
+	}
+}
+
+// --- Cipher.getInstance ---
+
+func cipherGetInstance() *detection.Rule {
+	return &detection.Rule{
+		ID:        "jca-cipher-getInstance",
+		Language:  detection.LangJava,
+		Bundle:    "JCA",
+		Pattern:   regexp.MustCompile(`Cipher\s*\.\s*getInstance\s*\(\s*"([^"]+)"`),
+		MatchType: detection.MatchMethodCall,
+		Extract:   extractCipherAlgorithm,
+	}
+}
+
+func extractCipherAlgorithm(match []string, loc model.DetectionLocation) []model.INode {
+	if len(match) < 2 {
+		return nil
+	}
+	raw := match[1] // e.g. "AES/CBC/PKCS5Padding"
+	parts := strings.Split(raw, "/")
+
+	algoName := parts[0]
+	prim := classifyCipherPrimitive(algoName)
+	algo := model.NewAlgorithm(algoName, prim, loc)
+	algo.AddFunction(model.FuncEncrypt)
+	algo.AddFunction(model.FuncDecrypt)
+
+	if len(parts) > 1 && parts[1] != "" {
+		algo.Put(model.NewMode(parts[1]))
+	}
+	if len(parts) > 2 && parts[2] != "" {
+		algo.Put(model.NewPadding(parts[2]))
+	}
+
+	return []model.INode{algo}
+}
+
+// --- MessageDigest.getInstance ---
+
+func messageDigestGetInstance() *detection.Rule {
+	return &detection.Rule{
+		ID:        "jca-messagedigest-getInstance",
+		Language:  detection.LangJava,
+		Bundle:    "JCA",
+		Pattern:   regexp.MustCompile(`MessageDigest\s*\.\s*getInstance\s*\(\s*"([^"]+)"`),
+		MatchType: detection.MatchMethodCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			algo := model.NewAlgorithm(match[1], model.PrimitiveHash, loc)
+			algo.AddFunction(model.FuncDigest)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- Signature.getInstance ---
+
+func signatureGetInstance() *detection.Rule {
+	return &detection.Rule{
+		ID:        "jca-signature-getInstance",
+		Language:  detection.LangJava,
+		Bundle:    "JCA",
+		Pattern:   regexp.MustCompile(`Signature\s*\.\s*getInstance\s*\(\s*"([^"]+)"`),
+		MatchType: detection.MatchMethodCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			algo := model.NewAlgorithm(match[1], model.PrimitiveSignature, loc)
+			algo.AddFunction(model.FuncSign)
+			algo.AddFunction(model.FuncVerify)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- Mac.getInstance ---
+
+func macGetInstance() *detection.Rule {
+	return &detection.Rule{
+		ID:        "jca-mac-getInstance",
+		Language:  detection.LangJava,
+		Bundle:    "JCA",
+		Pattern:   regexp.MustCompile(`Mac\s*\.\s*getInstance\s*\(\s*"([^"]+)"`),
+		MatchType: detection.MatchMethodCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			algo := model.NewAlgorithm(match[1], model.PrimitiveMAC, loc)
+			algo.AddFunction(model.FuncTag)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- KeyGenerator.getInstance ---
+
+func keyGeneratorGetInstance() *detection.Rule {
+	return &detection.Rule{
+		ID:        "jca-keygenerator-getInstance",
+		Language:  detection.LangJava,
+		Bundle:    "JCA",
+		Pattern:   regexp.MustCompile(`KeyGenerator\s*\.\s*getInstance\s*\(\s*"([^"]+)"`),
+		MatchType: detection.MatchMethodCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			algo := model.NewAlgorithm(match[1], classifyCipherPrimitive(match[1]), loc)
+			algo.AddFunction(model.FuncKeyGen)
+			key := model.NewKey(match[1], model.KindSecretKey, loc)
+			key.Put(algo)
+			return []model.INode{key}
+		},
+	}
+}
+
+// --- KeyPairGenerator.getInstance ---
+
+func keyPairGeneratorGetInstance() *detection.Rule {
+	return &detection.Rule{
+		ID:        "jca-keypairgenerator-getInstance",
+		Language:  detection.LangJava,
+		Bundle:    "JCA",
+		Pattern:   regexp.MustCompile(`KeyPairGenerator\s*\.\s*getInstance\s*\(\s*"([^"]+)"`),
+		MatchType: detection.MatchMethodCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			prim := classifyAsymmetricPrimitive(match[1])
+			algo := model.NewAlgorithm(match[1], prim, loc)
+			algo.AddFunction(model.FuncKeyGen)
+			pubKey := model.NewKey(match[1], model.KindPublicKey, loc)
+			pubKey.Put(algo)
+			privKey := model.NewKey(match[1], model.KindPrivateKey, loc)
+			privKey.Put(algo)
+			return []model.INode{pubKey, privKey}
+		},
+	}
+}
+
+// --- SecretKeySpec constructor ---
+
+func secretKeySpecConstructor() *detection.Rule {
+	return &detection.Rule{
+		ID:        "jca-secretkeyspec",
+		Language:  detection.LangJava,
+		Bundle:    "JCA",
+		Pattern:   regexp.MustCompile(`new\s+SecretKeySpec\s*\([^,]+,\s*"([^"]+)"\s*\)`),
+		MatchType: detection.MatchConstructor,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			algo := model.NewAlgorithm(match[1], classifyCipherPrimitive(match[1]), loc)
+			key := model.NewKey(match[1], model.KindSecretKey, loc)
+			key.Put(algo)
+			return []model.INode{key}
+		},
+	}
+}
+
+// --- KeyFactory.getInstance ---
+
+func keyFactoryGetInstance() *detection.Rule {
+	return &detection.Rule{
+		ID:        "jca-keyfactory-getInstance",
+		Language:  detection.LangJava,
+		Bundle:    "JCA",
+		Pattern:   regexp.MustCompile(`KeyFactory\s*\.\s*getInstance\s*\(\s*"([^"]+)"`),
+		MatchType: detection.MatchMethodCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			prim := classifyAsymmetricPrimitive(match[1])
+			algo := model.NewAlgorithm(match[1], prim, loc)
+			key := model.NewKey(match[1], model.KindKey, loc)
+			key.Put(algo)
+			return []model.INode{key}
+		},
+	}
+}
+
+// --- KeyAgreement.getInstance ---
+
+func keyAgreementGetInstance() *detection.Rule {
+	return &detection.Rule{
+		ID:        "jca-keyagreement-getInstance",
+		Language:  detection.LangJava,
+		Bundle:    "JCA",
+		Pattern:   regexp.MustCompile(`KeyAgreement\s*\.\s*getInstance\s*\(\s*"([^"]+)"`),
+		MatchType: detection.MatchMethodCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			algo := model.NewAlgorithm(match[1], model.PrimitiveKeyAgreement, loc)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- AlgorithmParameterGenerator.getInstance ---
+
+func algorithmParameterGeneratorGetInstance() *detection.Rule {
+	return &detection.Rule{
+		ID:        "jca-algparamgen-getInstance",
+		Language:  detection.LangJava,
+		Bundle:    "JCA",
+		Pattern:   regexp.MustCompile(`AlgorithmParameterGenerator\s*\.\s*getInstance\s*\(\s*"([^"]+)"`),
+		MatchType: detection.MatchMethodCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			prim := classifyAsymmetricPrimitive(match[1])
+			algo := model.NewAlgorithm(match[1], prim, loc)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- SSLContext.getInstance ---
+
+func sslContextGetInstance() *detection.Rule {
+	return &detection.Rule{
+		ID:        "jca-sslcontext-getInstance",
+		Language:  detection.LangJava,
+		Bundle:    "JCA",
+		Pattern:   regexp.MustCompile(`SSLContext\s*\.\s*getInstance\s*\(\s*"([^"]+)"`),
+		MatchType: detection.MatchMethodCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			proto := model.NewProtocol(match[1], loc)
+			return []model.INode{proto}
+		},
+	}
+}
+
+// --- SecretKeyFactory.getInstance ---
+
+func secretKeyFactoryGetInstance() *detection.Rule {
+	return &detection.Rule{
+		ID:        "jca-secretkeyfactory-getInstance",
+		Language:  detection.LangJava,
+		Bundle:    "JCA",
+		Pattern:   regexp.MustCompile(`SecretKeyFactory\s*\.\s*getInstance\s*\(\s*"([^"]+)"`),
+		MatchType: detection.MatchMethodCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			prim := classifyKDFPrimitive(match[1])
+			algo := model.NewAlgorithm(match[1], prim, loc)
+			algo.AddFunction(model.FuncKeyDerive)
+			key := model.NewKey(match[1], model.KindSecretKey, loc)
+			key.Put(algo)
+			return []model.INode{key}
+		},
+	}
+}
+
+// --- Classification helpers ---
+
+func classifyCipherPrimitive(name string) model.Primitive {
+	upper := strings.ToUpper(name)
+	switch {
+	case strings.Contains(upper, "AES") && strings.Contains(upper, "GCM"):
+		return model.PrimitiveAEAD
+	case strings.Contains(upper, "CHACHA20") && strings.Contains(upper, "POLY"):
+		return model.PrimitiveAEAD
+	case strings.Contains(upper, "AES"), strings.Contains(upper, "DES"),
+		strings.Contains(upper, "BLOWFISH"), strings.Contains(upper, "CAMELLIA"),
+		strings.Contains(upper, "TWOFISH"), strings.Contains(upper, "SERPENT"),
+		strings.Contains(upper, "ARIA"), strings.Contains(upper, "SM4"),
+		strings.Contains(upper, "SEED"), strings.Contains(upper, "CAST"):
+		return model.PrimitiveBlockCipher
+	case strings.Contains(upper, "RC4"), strings.Contains(upper, "CHACHA"),
+		strings.Contains(upper, "SALSA"), strings.Contains(upper, "GRAIN"):
+		return model.PrimitiveStreamCipher
+	default:
+		return model.PrimitiveUnknown
+	}
+}
+
+func classifyAsymmetricPrimitive(name string) model.Primitive {
+	upper := strings.ToUpper(name)
+	switch {
+	case strings.Contains(upper, "RSA"):
+		return model.PrimitivePublicKeyEncryption
+	case strings.Contains(upper, "EC"), strings.Contains(upper, "ECDSA"):
+		return model.PrimitiveSignature
+	case strings.Contains(upper, "DSA"):
+		return model.PrimitiveSignature
+	case strings.Contains(upper, "DH"), strings.Contains(upper, "ECDH"),
+		strings.Contains(upper, "DIFFIEHELLMAN"):
+		return model.PrimitiveKeyAgreement
+	default:
+		return model.PrimitiveUnknown
+	}
+}
+
+func classifyKDFPrimitive(name string) model.Primitive {
+	upper := strings.ToUpper(name)
+	switch {
+	case strings.Contains(upper, "PBKDF"), strings.Contains(upper, "PBE"):
+		return model.PrimitivePasswordHash
+	case strings.Contains(upper, "HKDF"), strings.Contains(upper, "SCRYPT"),
+		strings.Contains(upper, "ARGON"):
+		return model.PrimitiveKeyDerivation
+	default:
+		return model.PrimitiveUnknown
+	}
+}
