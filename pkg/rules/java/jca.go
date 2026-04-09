@@ -26,9 +26,13 @@ func jcaRules() []*detection.Rule {
 		secretKeySpecConstructor(),
 		keyFactoryGetInstance(),
 		keyAgreementGetInstance(),
-		algorithmParameterGeneratorGetInstance(),
 		sslContextGetInstance(),
 		secretKeyFactoryGetInstance(),
+		secureRandomGetInstance(),
+		secureRandomConstructor(),
+		secureRandomGetInstanceStrong(),
+		nullCipherConstructor(),
+		ivParameterSpecWithNewByteArray(),
 	}
 }
 
@@ -238,26 +242,6 @@ func keyAgreementGetInstance() *detection.Rule {
 	}
 }
 
-// --- AlgorithmParameterGenerator.getInstance ---
-
-func algorithmParameterGeneratorGetInstance() *detection.Rule {
-	return &detection.Rule{
-		ID:        "jca-algparamgen-getInstance",
-		Language:  detection.LangJava,
-		Bundle:    "JCA",
-		Pattern:   regexp.MustCompile(`AlgorithmParameterGenerator\s*\.\s*getInstance\s*\(\s*"([^"]+)"`),
-		MatchType: detection.MatchMethodCall,
-		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
-			if len(match) < 2 {
-				return nil
-			}
-			prim := classifyAsymmetricPrimitive(match[1])
-			algo := model.NewAlgorithm(match[1], prim, loc)
-			return []model.INode{algo}
-		},
-	}
-}
-
 // --- SSLContext.getInstance ---
 
 func sslContextGetInstance() *detection.Rule {
@@ -296,6 +280,103 @@ func secretKeyFactoryGetInstance() *detection.Rule {
 			key := model.NewKey(match[1], model.KindSecretKey, loc)
 			key.Put(algo)
 			return []model.INode{key}
+		},
+	}
+}
+
+// --- Classification helpers ---
+
+// --- NullCipher constructor (CWE-1240) ---
+// NullCipher is a Java cipher that performs no encryption at all.
+// Any use of it in production code disables confidentiality entirely.
+
+func nullCipherConstructor() *detection.Rule {
+	return &detection.Rule{
+		ID:        "jca-nullcipher-new",
+		Language:  detection.LangJava,
+		Bundle:    "JCA",
+		Pattern:   regexp.MustCompile(`new\s+NullCipher\s*\(\s*\)`),
+		MatchType: detection.MatchConstructor,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("NullCipher", model.PrimitiveBlockCipher, loc)
+			algo.AddFunction(model.FuncEncrypt)
+			algo.AddFunction(model.FuncDecrypt)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- IvParameterSpec with new byte array (CWE-1240) ---
+// Detects IvParameterSpec constructed with a newly allocated byte array literal,
+// which defaults to all-zero bytes — a hardcoded/static IV that breaks semantic security.
+
+func ivParameterSpecWithNewByteArray() *detection.Rule {
+	return &detection.Rule{
+		ID:        "jca-ivparameterspec-zero",
+		Language:  detection.LangJava,
+		Bundle:    "JCA",
+		Pattern:   regexp.MustCompile(`new\s+IvParameterSpec\s*\(\s*new\s+byte\s*\[`),
+		MatchType: detection.MatchConstructor,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("HardcodedIV", model.PrimitiveUnknown, loc)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- SecureRandom.getInstance("SHA1PRNG") ---
+
+func secureRandomGetInstance() *detection.Rule {
+	return &detection.Rule{
+		ID:        "jca-securerandom-getInstance",
+		Language:  detection.LangJava,
+		Bundle:    "JCA",
+		Pattern:   regexp.MustCompile(`SecureRandom\s*\.\s*getInstance\s*\(\s*"([^"]+)"`),
+		MatchType: detection.MatchMethodCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			algo := model.NewAlgorithm(match[1], model.PrimitivePRNG, loc)
+			algo.AddFunction(model.FuncGenerate)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- new SecureRandom() ---
+// Detects default-constructor usage — the JVM picks the algorithm automatically.
+
+func secureRandomConstructor() *detection.Rule {
+	return &detection.Rule{
+		ID:        "jca-securerandom-new",
+		Language:  detection.LangJava,
+		Bundle:    "JCA",
+		Pattern:   regexp.MustCompile(`new\s+SecureRandom\s*\(\s*\)`),
+		MatchType: detection.MatchConstructor,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("SecureRandom", model.PrimitivePRNG, loc)
+			algo.AddFunction(model.FuncGenerate)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- SecureRandom.getInstanceStrong() ---
+// Guaranteed to return a strong CSPRNG backed by the OS entropy source.
+// This is the recommended Java API for security-sensitive key generation.
+
+func secureRandomGetInstanceStrong() *detection.Rule {
+	return &detection.Rule{
+		ID:        "jca-securerandom-getInstanceStrong",
+		Language:  detection.LangJava,
+		Bundle:    "JCA",
+		Pattern:   regexp.MustCompile(`SecureRandom\s*\.\s*getInstanceStrong\s*\(\s*\)`),
+		MatchType: detection.MatchMethodCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("SecureRandom.getInstanceStrong", model.PrimitivePRNG, loc)
+			algo.AddFunction(model.FuncGenerate)
+			return []model.INode{algo}
 		},
 	}
 }

@@ -144,7 +144,7 @@ func bcMac() *detection.Rule {
 	}
 }
 
-// --- Key generators: new CipherKeyGenerator(), specific key gens ---
+// --- Key generators: explicit list of known BC symmetric algorithm key generators ---
 
 func bcKeyGenerator() *detection.Rule {
 	return &detection.Rule{
@@ -152,7 +152,7 @@ func bcKeyGenerator() *detection.Rule {
 		Language: detection.LangJava,
 		Bundle:   "BouncyCastle",
 		Pattern: regexp.MustCompile(
-			`new\s+(\w+)KeyGenerator\s*\(`),
+			`new\s+(AES|DES|DESede|Blowfish|Twofish|Camellia|ARIA|SM4|SEED|CAST5|CAST6|IDEA|RC2|RC4|RC5|RC6|ChaCha20|Salsa20|Noekeon|Skipjack|TEA|XTEA)KeyGenerator\s*\(`),
 		MatchType: detection.MatchConstructor,
 		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
 			if len(match) < 2 {

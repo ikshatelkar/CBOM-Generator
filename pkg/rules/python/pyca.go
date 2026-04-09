@@ -37,6 +37,12 @@ func pycaRules() []*detection.Rule {
 		pycaRSAEncrypt(),
 		pycaCipherSuite(),
 		pycaSSLContext(),
+		pycaOsUrandom(),
+		pycaSecrets(),
+		pycaBlake3(),
+		pycaCMAC(),
+		oqsKeyEncapsulation(),
+		oqsSignature(),
 	}
 }
 
@@ -144,6 +150,25 @@ func pycaHMAC() *detection.Rule {
 		MatchType: detection.MatchFunctionCall,
 		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
 			algo := model.NewAlgorithm("HMAC", model.PrimitiveMAC, loc)
+			algo.AddFunction(model.FuncTag)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- CMAC: cmac.CMAC(algorithm, backend=...) ---
+// from cryptography.hazmat.primitives.cmac import CMAC
+
+func pycaCMAC() *detection.Rule {
+	return &detection.Rule{
+		ID:       "pyca-cmac",
+		Language: detection.LangPython,
+		Bundle:   "Pyca",
+		Pattern: regexp.MustCompile(
+			`CMAC\s*\(\s*(\w+)\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("CMAC", model.PrimitiveMAC, loc)
 			algo.AddFunction(model.FuncTag)
 			return []model.INode{algo}
 		},
@@ -354,11 +379,19 @@ func pycaFernet() *detection.Rule {
 		Pattern: regexp.MustCompile(
 			`Fernet\s*\(\s*|Fernet\s*\.\s*generate_key\s*\(`),
 		MatchType: detection.MatchFunctionCall,
+		// Fernet is a high-level wrapper that always uses AES-128-CBC + HMAC-SHA256.
+		// Emit the real underlying primitives so the CBOM reflects actual crypto in use.
 		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
-			algo := model.NewAlgorithm("Fernet", model.PrimitiveAEAD, loc)
-			algo.AddFunction(model.FuncEncrypt)
-			algo.AddFunction(model.FuncDecrypt)
-			return []model.INode{algo}
+			aes := model.NewAlgorithm("AES", model.PrimitiveBlockCipher, loc)
+			aes.AddFunction(model.FuncEncrypt)
+			aes.AddFunction(model.FuncDecrypt)
+			aes.Put(model.NewMode("CBC"))
+			aes.Put(model.NewKeyLength(128))
+
+			hmac := model.NewAlgorithm("HMAC", model.PrimitiveMAC, loc)
+			hmac.AddFunction(model.FuncTag)
+
+			return []model.INode{aes, hmac}
 		},
 	}
 }
@@ -466,6 +499,41 @@ func pycaSSLContext() *detection.Rule {
 	}
 }
 
+// --- os.urandom(n) — OS-level CSPRNG ---
+
+func pycaOsUrandom() *detection.Rule {
+	return &detection.Rule{
+		ID:       "pyca-os-urandom",
+		Language: detection.LangPython,
+		Bundle:   "Pyca",
+		Pattern:  regexp.MustCompile(`os\s*\.\s*urandom\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("os.urandom", model.PrimitivePRNG, loc)
+			algo.AddFunction(model.FuncGenerate)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- secrets module: token_bytes, token_hex, token_urlsafe, randbits, SystemRandom ---
+
+func pycaSecrets() *detection.Rule {
+	return &detection.Rule{
+		ID:       "pyca-secrets",
+		Language: detection.LangPython,
+		Bundle:   "Pyca",
+		Pattern: regexp.MustCompile(
+			`secrets\s*\.\s*(token_bytes|token_hex|token_urlsafe|randbits|SystemRandom)\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("secrets", model.PrimitivePRNG, loc)
+			algo.AddFunction(model.FuncGenerate)
+			return []model.INode{algo}
+		},
+	}
+}
+
 // --- Classification helper ---
 
 func classifyPycaPrimitive(name string) model.Primitive {
@@ -475,5 +543,72 @@ func classifyPycaPrimitive(name string) model.Primitive {
 		return model.PrimitiveStreamCipher
 	default:
 		return model.PrimitiveBlockCipher
+	}
+}
+
+// --- Blake3: blake3.hash(...) / blake3.Blake3(...) ---
+// Blake3 is not part of the standard cryptography library; it is provided
+// by the standalone `blake3` PyPI package (import blake3).
+
+func pycaBlake3() *detection.Rule {
+	return &detection.Rule{
+		ID:       "pyca-blake3",
+		Language: detection.LangPython,
+		Bundle:   "Pyca",
+		Pattern: regexp.MustCompile(
+			`blake3\s*\.\s*(hash|Blake3|new)\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("BLAKE3", model.PrimitiveHash, loc)
+			algo.AddFunction(model.FuncDigest)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- liboqs-python: oqs.KeyEncapsulation("Kyber768") / oqs.KeyEncapsulation("ML-KEM-768") ---
+// liboqs-python is the Python binding for the Open Quantum Safe liboqs library.
+// It provides access to NIST PQC candidates and finalists.
+// import oqs
+
+func oqsKeyEncapsulation() *detection.Rule {
+	return &detection.Rule{
+		ID:       "liboqs-kem",
+		Language: detection.LangPython,
+		Bundle:   "liboqs",
+		Pattern: regexp.MustCompile(
+			`oqs\s*\.\s*KeyEncapsulation\s*\(\s*["']([^"']+)["']`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			algo := model.NewAlgorithm(match[1], model.PrimitiveKeyEncapsulation, loc)
+			algo.AddFunction(model.FuncEncapsulate)
+			algo.AddFunction(model.FuncDecapsulate)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- liboqs-python: oqs.Signature("Dilithium3") / oqs.Signature("ML-DSA-65") ---
+
+func oqsSignature() *detection.Rule {
+	return &detection.Rule{
+		ID:       "liboqs-signature",
+		Language: detection.LangPython,
+		Bundle:   "liboqs",
+		Pattern: regexp.MustCompile(
+			`oqs\s*\.\s*Signature\s*\(\s*["']([^"']+)["']`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			algo := model.NewAlgorithm(match[1], model.PrimitiveSignature, loc)
+			algo.AddFunction(model.FuncSign)
+			algo.AddFunction(model.FuncVerify)
+			return []model.INode{algo}
+		},
 	}
 }

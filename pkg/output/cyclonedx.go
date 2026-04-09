@@ -24,6 +24,13 @@ type BOM struct {
 	Dependencies []Dependency `json:"dependencies,omitempty"`
 }
 
+// ComponentVuln is a brief vulnerability annotation embedded directly in a Component.
+// It carries only the rule ID and severity so the component entry stays compact.
+type ComponentVuln struct {
+	ID       string `json:"id"`
+	Severity string `json:"severity"`
+}
+
 type Metadata struct {
 	Timestamp string     `json:"timestamp"`
 	Tools     []ToolInfo `json:"tools"`
@@ -44,6 +51,25 @@ type Component struct {
 	CryptoProperties *CryptoProperties `json:"cryptoProperties,omitempty"`
 	Evidence         *Evidence         `json:"evidence,omitempty"`
 	Properties       []Property        `json:"properties,omitempty"`
+	Vulnerabilities  []ComponentVuln   `json:"vulnerabilities,omitempty"`
+	VEX              *VEXBlock         `json:"vex,omitempty"`
+}
+
+// VEXBlock is the VEX extension field added to each component.
+// It is strictly additive — no existing fields are modified.
+// If a component has no VEX findings, this field is omitted entirely.
+type VEXBlock struct {
+	Vulnerabilities []VEXEntry `json:"vulnerabilities,omitempty"`
+}
+
+// VEXEntry represents the exploitability assessment for one vulnerability
+// on this component, per the CISA VEX specification.
+type VEXEntry struct {
+	CVEID           string `json:"cve_id"`
+	VEXStatus       string `json:"vex_status"`
+	Justification   string `json:"justification"`
+	ImpactStatement string `json:"impact_statement"`
+	Confidence      string `json:"confidence"`
 }
 
 type CryptoProperties struct {
@@ -113,6 +139,29 @@ func NewGenerator(projectDir string) *Generator {
 		projectDir: projectDir,
 		components: make(map[string]*Component),
 		deps:       make(map[string][]string),
+	}
+}
+
+// AnnotateVulnerabilities attaches vulnerability findings directly to the matching
+// components. The map key is the component bom-ref; the value is the list of
+// ComponentVuln entries to embed in that component.
+func (g *Generator) AnnotateVulnerabilities(findings map[string][]ComponentVuln) {
+	for ref, vulns := range findings {
+		if comp, ok := g.components[ref]; ok {
+			comp.Vulnerabilities = append(comp.Vulnerabilities, vulns...)
+		}
+	}
+}
+
+// AnnotateVEX attaches VEX exploitability assessments to the matching components.
+// The map key is the component bom-ref. This is a strictly additive operation —
+// no existing fields are modified.
+func (g *Generator) AnnotateVEX(vexFindings map[string]VEXBlock) {
+	for ref, block := range vexFindings {
+		if comp, ok := g.components[ref]; ok {
+			b := block
+			comp.VEX = &b
+		}
 	}
 }
 

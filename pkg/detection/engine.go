@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/cbom-scanner/pkg/model"
 )
@@ -24,16 +26,25 @@ type ScanResult struct {
 // Engine is the main detection engine that scans source files for crypto usage.
 type Engine struct {
 	registry *RuleRegistry
+	// Workers controls the size of the goroutine pool used during directory
+	// scans. Defaults to runtime.NumCPU() when zero or negative.
+	Workers int
 }
 
 func NewEngine(registry *RuleRegistry) *Engine {
 	return &Engine{registry: registry}
 }
 
-// ScanDirectory recursively scans a directory for crypto assets.
+// ScanDirectory recursively scans a directory for crypto assets using a
+// concurrent worker pool. The directory walk is performed sequentially to
+// collect file paths, then each file is scanned in parallel.
 func (e *Engine) ScanDirectory(root string) *ScanResult {
 	result := &ScanResult{}
 
+	// Phase 1: collect eligible file paths via a sequential walk.
+	// Walk itself is I/O-bound on the FS metadata layer and is not easily
+	// parallelised, but it is fast relative to parsing file contents.
+	var filePaths []string
 	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			result.Errors = append(result.Errors, err)
@@ -41,32 +52,77 @@ func (e *Engine) ScanDirectory(root string) *ScanResult {
 		}
 		if info.IsDir() {
 			base := filepath.Base(path)
-			// Skip common non-source directories
 			if base == ".git" || base == "node_modules" || base == "__pycache__" ||
 				base == "vendor" || base == "target" || base == "build" || base == ".idea" {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-
-		lang := languageFromExt(path)
-		if lang == "" {
-			return nil
+		if languageFromExt(path) != "" {
+			filePaths = append(filePaths, path)
 		}
-
-		findings, err := e.ScanFile(path, lang)
-		if err != nil {
-			result.Errors = append(result.Errors, err)
-			return nil
-		}
-		result.Findings = append(result.Findings, findings...)
 		return nil
 	})
+
+	if len(filePaths) == 0 {
+		return result
+	}
+
+	// Phase 2: fan out file scanning across a worker pool.
+	numWorkers := e.Workers
+	if numWorkers <= 0 {
+		numWorkers = runtime.NumCPU()
+	}
+	if numWorkers > len(filePaths) {
+		numWorkers = len(filePaths)
+	}
+
+	type fileResult struct {
+		findings []Finding
+		err      error
+	}
+
+	pathCh := make(chan string, len(filePaths))
+	resultCh := make(chan fileResult, len(filePaths))
+
+	var wg sync.WaitGroup
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for path := range pathCh {
+				lang := languageFromExt(path)
+				findings, err := e.ScanFile(path, lang)
+				resultCh <- fileResult{findings: findings, err: err}
+			}
+		}()
+	}
+
+	for _, p := range filePaths {
+		pathCh <- p
+	}
+	close(pathCh)
+
+	// Close resultCh once all workers have finished so the collector loop below
+	// can terminate cleanly.
+	go func() {
+		wg.Wait()
+		close(resultCh)
+	}()
+
+	// Phase 3: collect results.
+	for r := range resultCh {
+		if r.err != nil {
+			result.Errors = append(result.Errors, r.err)
+		}
+		result.Findings = append(result.Findings, r.findings...)
+	}
 
 	return result
 }
 
 // ScanFile scans a single file for crypto assets.
+// It is safe to call from multiple goroutines concurrently.
 func (e *Engine) ScanFile(filePath string, lang Language) ([]Finding, error) {
 	f, err := os.Open(filePath)
 	if err != nil {
@@ -130,3 +186,4 @@ func languageFromExt(path string) Language {
 		return ""
 	}
 }
+

@@ -1,3 +1,5 @@
 test-repos/*
+testrepo/
 cbom.json
+results.sarif
 *.exe
