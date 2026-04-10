@@ -947,6 +947,28 @@ func RegisterAllRules(registry *VulnRuleRegistry) {
 		},
 	})
 
+	// -------------------------------------------------------------------------
+	// CBOM-KS-001: Deprecated JKS Keystore Format
+	// -------------------------------------------------------------------------
+	registry.Register(&VulnRule{
+		ID:       "CBOM-KS-001",
+		Category: "keystore",
+		Title:    "Deprecated JKS Keystore Format",
+		Description: "The Java KeyStore (JKS) format is a proprietary Sun Microsystems format " +
+			"that was deprecated in Java 9 (JEP 229). It protects private keys with 3DES " +
+			"and the integrity of the entire store with SHA-1 using a weak obfuscation scheme. " +
+			"These cryptographic primitives are both deprecated by NIST SP 800-131A Rev 2.",
+		Severity:   "medium",
+		References: []string{"JEP 229", "NIST SP 800-131A Rev 2", "JDK-8044445"},
+		Recommendation: "Migrate to PKCS12 format: KeyStore.getInstance(\"PKCS12\"). " +
+			"In Java 9+ PKCS12 is the default. Convert existing JKS stores with: " +
+			"keytool -importkeystore -srckeystore old.jks -destkeystore new.p12 -deststoretype PKCS12.",
+		Match: func(node model.INode) bool {
+			a, ok := node.(*model.Algorithm)
+			return ok && strings.EqualFold(a.Name, "KeyStore-JKS")
+		},
+	})
+
 	// ==========================================================================
 	// NATIONAL CIPHER SUITES
 	// Covers algorithms mandated by national standards bodies with limited

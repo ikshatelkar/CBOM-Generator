@@ -69,10 +69,11 @@ const (
 
 // DetectionLocation holds where in source code a crypto asset was detected.
 type DetectionLocation struct {
-	FilePath string `json:"filePath"`
-	Line     int    `json:"line"`
-	Column   int    `json:"column"`
-	Bundle   string `json:"bundle"` // e.g. "JCA", "BouncyCastle", "Pyca"
+	FilePath    string `json:"filePath"`
+	Line        int    `json:"line"`
+	Column      int    `json:"column"`
+	Bundle      string `json:"bundle"`      // e.g. "JCA", "BouncyCastle", "Pyca"
+	MatchedText string `json:"matchedText"` // the exact source text the regex matched
 }
 
 // INode is the base interface for all nodes in the crypto asset tree.

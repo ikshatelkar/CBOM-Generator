@@ -150,10 +150,11 @@ func (e *Engine) ScanFile(filePath string, lang Language) ([]Finding, error) {
 			}
 
 			loc := model.DetectionLocation{
-				FilePath: filePath,
-				Line:     lineNum,
-				Column:   strings.Index(line, matches[0]) + 1,
-				Bundle:   rule.Bundle,
+				FilePath:    filePath,
+				Line:        lineNum,
+				Column:      strings.Index(line, matches[0]) + 1,
+				Bundle:      rule.Bundle,
+				MatchedText: matches[0],
 			}
 
 			nodes := rule.Extract(matches, loc)

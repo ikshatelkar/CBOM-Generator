@@ -237,6 +237,9 @@ func (g *Generator) addAlgorithm(algo *model.Algorithm, parentRef string) string
 	}
 
 	props = append(props, Property{Name: "bundle", Value: algo.DetectionLocation.Bundle})
+	if algo.DetectionLocation.MatchedText != "" {
+		props = append(props, Property{Name: "matchedText", Value: algo.DetectionLocation.MatchedText})
+	}
 
 	comp := &Component{
 		Type:             "crypto-asset",
@@ -287,15 +290,20 @@ func (g *Generator) addKey(key *model.Key, parentRef string) string {
 		},
 	}
 
+	keyProps := []Property{
+		{Name: "bundle", Value: key.DetectionLocation.Bundle},
+	}
+	if key.DetectionLocation.MatchedText != "" {
+		keyProps = append(keyProps, Property{Name: "matchedText", Value: key.DetectionLocation.MatchedText})
+	}
+
 	comp := &Component{
 		Type:             "crypto-asset",
 		BOMRef:           ref,
 		Name:             key.Name,
 		CryptoProperties: cp,
 		Evidence:         g.makeEvidence(key.DetectionLocation),
-		Properties: []Property{
-			{Name: "bundle", Value: key.DetectionLocation.Bundle},
-		},
+		Properties:       keyProps,
 	}
 
 	g.components[ref] = comp
@@ -330,15 +338,20 @@ func (g *Generator) addProtocol(proto *model.Protocol, parentRef string) string 
 		},
 	}
 
+	protoProps := []Property{
+		{Name: "bundle", Value: proto.DetectionLocation.Bundle},
+	}
+	if proto.DetectionLocation.MatchedText != "" {
+		protoProps = append(protoProps, Property{Name: "matchedText", Value: proto.DetectionLocation.MatchedText})
+	}
+
 	comp := &Component{
 		Type:             "crypto-asset",
 		BOMRef:           ref,
 		Name:             proto.Name,
 		CryptoProperties: cp,
 		Evidence:         g.makeEvidence(proto.DetectionLocation),
-		Properties: []Property{
-			{Name: "bundle", Value: proto.DetectionLocation.Bundle},
-		},
+		Properties:       protoProps,
 	}
 
 	g.components[ref] = comp

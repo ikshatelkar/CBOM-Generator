@@ -7,6 +7,13 @@ import (
 	"strings"
 )
 
+// ANSI colour codes — used only when writing to the terminal report.
+const (
+	colorRed   = "\033[31m"
+	colorGreen = "\033[32m"
+	colorReset = "\033[0m"
+)
+
 // assetReport holds the aggregated data for one unique asset name.
 // Pass and Fail are counted per individual component occurrence (use),
 // not per asset name, so a name can have some passing and some failing uses.
@@ -78,10 +85,10 @@ func (g *Generator) PrintReport(w io.Writer) {
 	}
 	nameWidth += 2
 
-	usesWidth   := len(usesHeader) + 2
-	passWidth   := len(passHeader) + 2
-	failWidth   := len(failHeader) + 2
-	totalWidth  := nameWidth + usesWidth + passWidth + failWidth + len(statusHeader) + 6
+	usesWidth  := len(usesHeader) + 2
+	passWidth  := len(passHeader) + 2
+	failWidth  := len(failHeader) + 2
+	totalWidth := nameWidth + usesWidth + passWidth + failWidth + len(statusHeader) + 6
 
 	sep := strings.Repeat("-", totalWidth)
 	fmt.Fprintln(w)
@@ -107,19 +114,27 @@ func (g *Generator) PrintReport(w io.Writer) {
 		passUses  += entry.PassUses
 		failUses  += entry.FailUses
 
-		status := "PASS"
+		var status string
 		if entry.FailUses > 0 {
-			status = "FAIL"
+			label := "FAIL"
 			if entry.MaxSeverity != "" {
-				status = fmt.Sprintf("FAIL (%s)", strings.ToUpper(entry.MaxSeverity))
+				label = fmt.Sprintf("FAIL (%s)", strings.ToUpper(entry.MaxSeverity))
 			}
+			status = colorRed + label + colorReset
+		} else {
+			status = colorGreen + "PASS" + colorReset
 		}
 
-		fmt.Fprintf(w, "  %-*s  %-*d  %-*d  %-*d  %s\n",
+		// Only the status word is coloured; numbers stay plain white.
+		var passStr, failStr string
+		passStr = fmt.Sprintf("%-*d", passWidth, entry.PassUses)
+		failStr = fmt.Sprintf("%-*d", failWidth, entry.FailUses)
+
+		fmt.Fprintf(w, "  %-*s  %-*d  %s  %s  %s\n",
 			nameWidth, entry.Name,
 			usesWidth, uses,
-			passWidth, entry.PassUses,
-			failWidth, entry.FailUses,
+			passStr,
+			failStr,
 			status,
 		)
 	}

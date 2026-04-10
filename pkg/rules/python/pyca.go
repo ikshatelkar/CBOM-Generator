@@ -8,20 +8,28 @@ import (
 	"github.com/cbom-scanner/pkg/model"
 )
 
-// RegisterPycaDetectionRules registers pyca/cryptography library detection rules.
-func RegisterPycaDetectionRules(registry *detection.RuleRegistry) {
-	for _, r := range pycaRules() {
+// RegisterAllPythonDetectionRules registers every Python crypto detection rule.
+// Rules are grouped by library:
+//   - pyca/cryptography  — the primary modern Python crypto library
+//   - Python stdlib       — hashlib, hmac, random
+//   - PyCryptodome        — Crypto.* (maintained PyCrypto fork)
+//   - PyNaCl             — libsodium bindings
+//   - PyJWT              — JSON Web Token library
+func RegisterAllPythonDetectionRules(registry *detection.RuleRegistry) {
+	for _, r := range allPythonRules() {
 		registry.Register(r)
 	}
 }
 
-func pycaRules() []*detection.Rule {
+func allPythonRules() []*detection.Rule {
 	return []*detection.Rule{
+		// ── pyca/cryptography ────────────────────────────────────────────────
 		pycaSymmetricAlgorithm(),
 		pycaCipherMode(),
 		pycaAEADCipher(),
 		pycaHashAlgorithm(),
 		pycaHMAC(),
+		pycaCMAC(),
 		pycaRSAKeyGen(),
 		pycaECKeyGen(),
 		pycaDSAKeyGen(),
@@ -40,11 +48,39 @@ func pycaRules() []*detection.Rule {
 		pycaOsUrandom(),
 		pycaSecrets(),
 		pycaBlake3(),
-		pycaCMAC(),
 		oqsKeyEncapsulation(),
 		oqsSignature(),
+
+		// ── Python standard library ──────────────────────────────────────────
+		pyHashlibAlgo(),
+		pyHashlibNew(),
+		pyHashlibPBKDF2(),
+		pyHmacNew(),
+
+		// ── PyCryptodome (Crypto.*) ──────────────────────────────────────────
+		pycryptodomeAESNew(),
+		pycryptodomeSymmetricNew(),
+		pycryptodomeHashNew(),
+		pycryptodomeRSAGenerate(),
+		pycryptodomeECCGenerate(),
+		pycryptodomeRSAEncrypt(),
+		pycryptodomeHMAC(),
+		pycryptodomeKDF(),
+
+		// ── PyNaCl (libsodium) ───────────────────────────────────────────────
+		pynaclSigningKey(),
+		pynaclSecretBox(),
+		pynaclPublicBox(),
+
+		// ── PyJWT ────────────────────────────────────────────────────────────
+		pyjwtEncode(),
+		pyjwtDecode(),
 	}
 }
+
+// ============================================================================
+// pyca/cryptography
+// ============================================================================
 
 // --- Symmetric algorithms: algorithms.AES(key), algorithms.TripleDES(key), etc. ---
 
@@ -156,8 +192,7 @@ func pycaHMAC() *detection.Rule {
 	}
 }
 
-// --- CMAC: cmac.CMAC(algorithm, backend=...) ---
-// from cryptography.hazmat.primitives.cmac import CMAC
+// --- CMAC: CMAC(algorithm()) ---
 
 func pycaCMAC() *detection.Rule {
 	return &detection.Rule{
@@ -238,7 +273,7 @@ func pycaDSAKeyGen() *detection.Rule {
 	}
 }
 
-// --- DH key generation: dh.generate_parameters / generate_private_key ---
+// --- DH key generation: dh.generate_private_key ---
 
 func pycaDHKeyGen() *detection.Rule {
 	return &detection.Rule{
@@ -370,6 +405,8 @@ func pycaKDF() *detection.Rule {
 }
 
 // --- Fernet ---
+// Fernet is a high-level wrapper that always uses AES-128-CBC + HMAC-SHA256.
+// Emit the real underlying primitives so the CBOM reflects actual crypto in use.
 
 func pycaFernet() *detection.Rule {
 	return &detection.Rule{
@@ -379,8 +416,6 @@ func pycaFernet() *detection.Rule {
 		Pattern: regexp.MustCompile(
 			`Fernet\s*\(\s*|Fernet\s*\.\s*generate_key\s*\(`),
 		MatchType: detection.MatchFunctionCall,
-		// Fernet is a high-level wrapper that always uses AES-128-CBC + HMAC-SHA256.
-		// Emit the real underlying primitives so the CBOM reflects actual crypto in use.
 		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
 			aes := model.NewAlgorithm("AES", model.PrimitiveBlockCipher, loc)
 			aes.AddFunction(model.FuncEncrypt)
@@ -503,10 +538,10 @@ func pycaSSLContext() *detection.Rule {
 
 func pycaOsUrandom() *detection.Rule {
 	return &detection.Rule{
-		ID:       "pyca-os-urandom",
-		Language: detection.LangPython,
-		Bundle:   "Pyca",
-		Pattern:  regexp.MustCompile(`os\s*\.\s*urandom\s*\(`),
+		ID:        "pyca-os-urandom",
+		Language:  detection.LangPython,
+		Bundle:    "Pyca",
+		Pattern:   regexp.MustCompile(`os\s*\.\s*urandom\s*\(`),
 		MatchType: detection.MatchFunctionCall,
 		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
 			algo := model.NewAlgorithm("os.urandom", model.PrimitivePRNG, loc)
@@ -534,18 +569,6 @@ func pycaSecrets() *detection.Rule {
 	}
 }
 
-// --- Classification helper ---
-
-func classifyPycaPrimitive(name string) model.Primitive {
-	upper := strings.ToUpper(name)
-	switch {
-	case upper == "ARC4" || upper == "CHACHA20":
-		return model.PrimitiveStreamCipher
-	default:
-		return model.PrimitiveBlockCipher
-	}
-}
-
 // --- Blake3: blake3.hash(...) / blake3.Blake3(...) ---
 // Blake3 is not part of the standard cryptography library; it is provided
 // by the standalone `blake3` PyPI package (import blake3).
@@ -566,10 +589,7 @@ func pycaBlake3() *detection.Rule {
 	}
 }
 
-// --- liboqs-python: oqs.KeyEncapsulation("Kyber768") / oqs.KeyEncapsulation("ML-KEM-768") ---
-// liboqs-python is the Python binding for the Open Quantum Safe liboqs library.
-// It provides access to NIST PQC candidates and finalists.
-// import oqs
+// --- liboqs-python: oqs.KeyEncapsulation("Kyber768") ---
 
 func oqsKeyEncapsulation() *detection.Rule {
 	return &detection.Rule{
@@ -591,7 +611,7 @@ func oqsKeyEncapsulation() *detection.Rule {
 	}
 }
 
-// --- liboqs-python: oqs.Signature("Dilithium3") / oqs.Signature("ML-DSA-65") ---
+// --- liboqs-python: oqs.Signature("Dilithium3") ---
 
 func oqsSignature() *detection.Rule {
 	return &detection.Rule{
@@ -610,5 +630,419 @@ func oqsSignature() *detection.Rule {
 			algo.AddFunction(model.FuncVerify)
 			return []model.INode{algo}
 		},
+	}
+}
+
+// ============================================================================
+// Python standard library (hashlib, hmac, random)
+// ============================================================================
+
+// --- hashlib.<algo>() — e.g. hashlib.sha256(), hashlib.md5() ---
+
+func pyHashlibAlgo() *detection.Rule {
+	return &detection.Rule{
+		ID:       "py-hashlib-algo",
+		Language: detection.LangPython,
+		Bundle:   "hashlib",
+		Pattern: regexp.MustCompile(
+			`hashlib\s*\.\s*(md5|sha1|sha224|sha256|sha384|sha512|sha3_224|sha3_256|sha3_384|sha3_512|blake2b|blake2s|sm3)\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			name := strings.ToUpper(match[1])
+			name = strings.ReplaceAll(name, "_", "-")
+			algo := model.NewAlgorithm(name, model.PrimitiveHash, loc)
+			algo.AddFunction(model.FuncDigest)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- hashlib.new("sha256", data) ---
+
+func pyHashlibNew() *detection.Rule {
+	return &detection.Rule{
+		ID:       "py-hashlib-new",
+		Language: detection.LangPython,
+		Bundle:   "hashlib",
+		Pattern: regexp.MustCompile(
+			`hashlib\s*\.\s*new\s*\(\s*["']([^"']+)["']`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			name := strings.ToUpper(match[1])
+			algo := model.NewAlgorithm(name, model.PrimitiveHash, loc)
+			algo.AddFunction(model.FuncDigest)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- hashlib.pbkdf2_hmac('sha256', password, salt, iterations) ---
+
+func pyHashlibPBKDF2() *detection.Rule {
+	return &detection.Rule{
+		ID:       "py-hashlib-pbkdf2",
+		Language: detection.LangPython,
+		Bundle:   "hashlib",
+		Pattern: regexp.MustCompile(
+			`hashlib\s*\.\s*pbkdf2_hmac\s*\(\s*["']([^"']+)["']`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			hashName := strings.ToUpper(strings.ReplaceAll(match[1], "-", ""))
+			name := "PBKDF2WithHmac" + hashName
+			algo := model.NewAlgorithm(name, model.PrimitivePasswordHash, loc)
+			algo.AddFunction(model.FuncKeyDerive)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- hmac.new(key, msg, digestmod=hashlib.sha256) ---
+// Python stdlib hmac module — distinct from pyca's hmac.HMAC().
+
+func pyHmacNew() *detection.Rule {
+	return &detection.Rule{
+		ID:        "py-hmac-new",
+		Language:  detection.LangPython,
+		Bundle:    "hashlib",
+		Pattern:   regexp.MustCompile(`\bhmac\s*\.\s*new\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("HMAC", model.PrimitiveMAC, loc)
+			algo.AddFunction(model.FuncTag)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// ============================================================================
+// PyCryptodome (Crypto.*)
+// ============================================================================
+
+// --- AES.new(key, AES.MODE_CBC, iv) ---
+
+func pycryptodomeAESNew() *detection.Rule {
+	return &detection.Rule{
+		ID:        "pycryptodome-aes-new",
+		Language:  detection.LangPython,
+		Bundle:    "PyCryptodome",
+		Pattern:   regexp.MustCompile(`\bAES\s*\.\s*new\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("AES", model.PrimitiveBlockCipher, loc)
+			algo.AddFunction(model.FuncEncrypt)
+			algo.AddFunction(model.FuncDecrypt)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- DES.new(), DES3.new(), Blowfish.new(), ARC4.new(), ChaCha20.new() etc. ---
+
+func pycryptodomeSymmetricNew() *detection.Rule {
+	return &detection.Rule{
+		ID:       "pycryptodome-symmetric-new",
+		Language: detection.LangPython,
+		Bundle:   "PyCryptodome",
+		Pattern: regexp.MustCompile(
+			`\b(DES3|DES|ARC2|ARC4|Blowfish|CAST|ChaCha20|Salsa20|XSalsa20)\s*\.\s*new\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			name := match[1]
+			var prim model.Primitive
+			switch strings.ToUpper(name) {
+			case "ARC4", "CHACHA20", "SALSA20", "XSALSA20":
+				prim = model.PrimitiveStreamCipher
+			default:
+				prim = model.PrimitiveBlockCipher
+			}
+			algo := model.NewAlgorithm(name, prim, loc)
+			algo.AddFunction(model.FuncEncrypt)
+			algo.AddFunction(model.FuncDecrypt)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- MD5.new(), SHA256.new(), SHA1.new() etc. ---
+
+func pycryptodomeHashNew() *detection.Rule {
+	return &detection.Rule{
+		ID:       "pycryptodome-hash-new",
+		Language: detection.LangPython,
+		Bundle:   "PyCryptodome",
+		Pattern: regexp.MustCompile(
+			`\b(MD5|MD4|SHA1|SHA224|SHA256|SHA384|SHA512|SHA3_256|SHA3_384|SHA3_512|BLAKE2b|BLAKE2s|RIPEMD160|keccak)\s*\.\s*new\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			algo := model.NewAlgorithm(strings.ToUpper(match[1]), model.PrimitiveHash, loc)
+			algo.AddFunction(model.FuncDigest)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- RSA.generate(2048) ---
+
+func pycryptodomeRSAGenerate() *detection.Rule {
+	return &detection.Rule{
+		ID:        "pycryptodome-rsa-generate",
+		Language:  detection.LangPython,
+		Bundle:    "PyCryptodome",
+		Pattern:   regexp.MustCompile(`\bRSA\s*\.\s*generate\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("RSA", model.PrimitivePublicKeyEncryption, loc)
+			algo.AddFunction(model.FuncKeyGen)
+			key := model.NewKey("RSA", model.KindPrivateKey, loc)
+			key.Put(algo)
+			return []model.INode{key}
+		},
+	}
+}
+
+// --- ECC.generate(curve='P-256') ---
+
+func pycryptodomeECCGenerate() *detection.Rule {
+	return &detection.Rule{
+		ID:        "pycryptodome-ecc-generate",
+		Language:  detection.LangPython,
+		Bundle:    "PyCryptodome",
+		Pattern:   regexp.MustCompile(`\bECC\s*\.\s*generate\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("EC", model.PrimitiveSignature, loc)
+			algo.AddFunction(model.FuncKeyGen)
+			key := model.NewKey("EC", model.KindPrivateKey, loc)
+			key.Put(algo)
+			return []model.INode{key}
+		},
+	}
+}
+
+// --- PKCS1_OAEP.new(key) / PKCS1_v1_5.new(key) ---
+
+func pycryptodomeRSAEncrypt() *detection.Rule {
+	return &detection.Rule{
+		ID:       "pycryptodome-rsa-pkcs",
+		Language: detection.LangPython,
+		Bundle:   "PyCryptodome",
+		Pattern: regexp.MustCompile(
+			`\b(PKCS1_OAEP|PKCS1_v1_5|pkcs1_15)\s*\.\s*new\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			padding := "PKCS1v15"
+			if strings.Contains(strings.ToUpper(match[1]), "OAEP") {
+				padding = "OAEP"
+			}
+			algo := model.NewAlgorithm("RSA", model.PrimitivePublicKeyEncryption, loc)
+			algo.AddFunction(model.FuncEncrypt)
+			algo.Put(model.NewPadding(padding))
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- HMAC.new(key, digestmod=SHA256) ---
+
+func pycryptodomeHMAC() *detection.Rule {
+	return &detection.Rule{
+		ID:        "pycryptodome-hmac",
+		Language:  detection.LangPython,
+		Bundle:    "PyCryptodome",
+		Pattern:   regexp.MustCompile(`\bHMAC\s*\.\s*new\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("HMAC", model.PrimitiveMAC, loc)
+			algo.AddFunction(model.FuncTag)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- PBKDF2(password, salt, ...) / scrypt(...) / bcrypt(...) ---
+
+func pycryptodomeKDF() *detection.Rule {
+	return &detection.Rule{
+		ID:       "pycryptodome-kdf",
+		Language: detection.LangPython,
+		Bundle:   "PyCryptodome",
+		Pattern: regexp.MustCompile(
+			`\b(PBKDF2|scrypt|bcrypt)\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			name := strings.ToUpper(match[1])
+			prim := model.PrimitiveKeyDerivation
+			if name == "PBKDF2" || name == "BCRYPT" {
+				prim = model.PrimitivePasswordHash
+			}
+			algo := model.NewAlgorithm(name, prim, loc)
+			algo.AddFunction(model.FuncKeyDerive)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// ============================================================================
+// PyNaCl (libsodium bindings)
+// ============================================================================
+
+// --- nacl.signing.SigningKey.generate() — Ed25519 ---
+
+func pynaclSigningKey() *detection.Rule {
+	return &detection.Rule{
+		ID:       "pynacl-signing-key",
+		Language: detection.LangPython,
+		Bundle:   "PyNaCl",
+		Pattern: regexp.MustCompile(
+			`nacl\s*\.\s*signing\s*\.\s*SigningKey\s*\.\s*generate\s*\(\s*\)`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("Ed25519", model.PrimitiveSignature, loc)
+			algo.AddFunction(model.FuncKeyGen)
+			algo.Put(model.NewEllipticCurve("Ed25519"))
+			key := model.NewKey("Ed25519", model.KindPrivateKey, loc)
+			key.Put(algo)
+			return []model.INode{key}
+		},
+	}
+}
+
+// --- nacl.secret.SecretBox(key) — XSalsa20-Poly1305 ---
+
+func pynaclSecretBox() *detection.Rule {
+	return &detection.Rule{
+		ID:       "pynacl-secret-box",
+		Language: detection.LangPython,
+		Bundle:   "PyNaCl",
+		Pattern: regexp.MustCompile(
+			`nacl\s*\.\s*secret\s*\.\s*SecretBox\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("XSalsa20-Poly1305", model.PrimitiveAEAD, loc)
+			algo.AddFunction(model.FuncEncrypt)
+			algo.AddFunction(model.FuncDecrypt)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- nacl.public.Box(private_key, public_key) — Curve25519 + XSalsa20-Poly1305 ---
+
+func pynaclPublicBox() *detection.Rule {
+	return &detection.Rule{
+		ID:       "pynacl-public-box",
+		Language: detection.LangPython,
+		Bundle:   "PyNaCl",
+		Pattern: regexp.MustCompile(
+			`nacl\s*\.\s*public\s*\.\s*Box\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("Curve25519", model.PrimitiveKeyAgreement, loc)
+			algo.AddFunction(model.FuncKeyGen)
+			algo.Put(model.NewEllipticCurve("Curve25519"))
+			return []model.INode{algo}
+		},
+	}
+}
+
+// ============================================================================
+// PyJWT
+// ============================================================================
+
+// --- jwt.encode(payload, key, algorithm="HS256") ---
+
+func pyjwtEncode() *detection.Rule {
+	return &detection.Rule{
+		ID:       "pyjwt-encode",
+		Language: detection.LangPython,
+		Bundle:   "PyJWT",
+		Pattern: regexp.MustCompile(
+			`jwt\s*\.\s*encode\s*\([^)]*algorithm\s*=\s*["']([A-Z0-9]+)["']`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			algoName := strings.ToUpper(match[1])
+			prim := classifyJWTAlgorithm(algoName)
+			algo := model.NewAlgorithm(algoName, prim, loc)
+			algo.AddFunction(model.FuncSign)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- jwt.decode(token, key, algorithms=["RS256", ...]) ---
+
+func pyjwtDecode() *detection.Rule {
+	return &detection.Rule{
+		ID:       "pyjwt-decode",
+		Language: detection.LangPython,
+		Bundle:   "PyJWT",
+		Pattern: regexp.MustCompile(
+			`jwt\s*\.\s*decode\s*\([^)]*algorithms\s*=\s*\[\s*["']([A-Z0-9]+)["']`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			algoName := strings.ToUpper(match[1])
+			prim := classifyJWTAlgorithm(algoName)
+			algo := model.NewAlgorithm(algoName, prim, loc)
+			algo.AddFunction(model.FuncVerify)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// ============================================================================
+// Classification helpers
+// ============================================================================
+
+func classifyPycaPrimitive(name string) model.Primitive {
+	upper := strings.ToUpper(name)
+	switch {
+	case upper == "ARC4" || upper == "CHACHA20":
+		return model.PrimitiveStreamCipher
+	default:
+		return model.PrimitiveBlockCipher
+	}
+}
+
+// classifyJWTAlgorithm maps a JWT algorithm name to the closest model primitive.
+// HS* = HMAC-based (symmetric), RS*/PS* = RSA, ES* = ECDSA, EdDSA/Ed* = EdDSA.
+func classifyJWTAlgorithm(name string) model.Primitive {
+	switch {
+	case strings.HasPrefix(name, "HS"):
+		return model.PrimitiveMAC
+	case strings.HasPrefix(name, "RS"), strings.HasPrefix(name, "PS"):
+		return model.PrimitiveSignature
+	case strings.HasPrefix(name, "ES"):
+		return model.PrimitiveSignature
+	case name == "EDDSA", strings.HasPrefix(name, "ED"):
+		return model.PrimitiveSignature
+	default:
+		return model.PrimitiveUnknown
 	}
 }

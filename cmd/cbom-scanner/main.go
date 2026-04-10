@@ -95,7 +95,8 @@ func main() {
 	registry := detection.NewRuleRegistry()
 	java.RegisterJCADetectionRules(registry)
 	java.RegisterBouncyCastleDetectionRules(registry)
-	python.RegisterPycaDetectionRules(registry)
+	java.RegisterSpringDetectionRules(registry)
+	python.RegisterAllPythonDetectionRules(registry)
 
 	ruleCount := len(registry.AllRules())
 	fmt.Printf("Loaded %d detection rules\n", ruleCount)
@@ -222,7 +223,9 @@ func printSummary(nodes []model.INode, findings map[string][]output.ComponentVul
 		}
 	}
 
-	// Count vulnerabilities by severity across all components
+	// Count vulnerable components — each component counts once regardless of
+	// how many rules fired on it. The component's highest severity is used
+	// for the per-severity breakdown.
 	sevCount := map[string]int{
 		"critical": 0,
 		"high":     0,
@@ -232,10 +235,18 @@ func printSummary(nodes []model.INode, findings map[string][]output.ComponentVul
 	}
 	total := 0
 	for _, vulns := range findings {
-		for _, v := range vulns {
-			sevCount[v.Severity]++
-			total++
+		if len(vulns) == 0 {
+			continue
 		}
+		total++ // count this asset once
+		// Pick the highest severity among all rules that fired on it
+		worst := "info"
+		for _, v := range vulns {
+			if severityOrder[v.Severity] > severityOrder[worst] {
+				worst = v.Severity
+			}
+		}
+		sevCount[worst]++
 	}
 
 	fmt.Println("\n--- Summary ---")
@@ -251,17 +262,31 @@ func printSummary(nodes []model.INode, findings map[string][]output.ComponentVul
 	fmt.Printf("  Low:      %d\n", sevCount["low"])
 	fmt.Printf("  Info:     %d\n", sevCount["info"])
 
-	// VEX status breakdown
+	// VEX status breakdown — each component counted once using its most
+	// significant status (affected > under_investigation > fixed > not_affected).
+	vexPriority := map[string]int{
+		"not_affected":        1,
+		"fixed":               2,
+		"under_investigation": 3,
+		"affected":            4,
+	}
 	vexCount := map[string]int{
-		"affected":             0,
-		"not_affected":         0,
-		"fixed":                0,
-		"under_investigation":  0,
+		"affected":            0,
+		"not_affected":        0,
+		"fixed":               0,
+		"under_investigation": 0,
 	}
 	for _, block := range vexFindings {
-		for _, entry := range block.Vulnerabilities {
-			vexCount[entry.VEXStatus]++
+		if len(block.Vulnerabilities) == 0 {
+			continue
 		}
+		worst := "not_affected"
+		for _, entry := range block.Vulnerabilities {
+			if vexPriority[entry.VEXStatus] > vexPriority[worst] {
+				worst = entry.VEXStatus
+			}
+		}
+		vexCount[worst]++
 	}
 	fmt.Println("\n--- VEX Assessment ---")
 	fmt.Printf("  Affected:             %d\n", vexCount["affected"])

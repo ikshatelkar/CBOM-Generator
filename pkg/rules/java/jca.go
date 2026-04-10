@@ -33,6 +33,7 @@ func jcaRules() []*detection.Rule {
 		secureRandomGetInstanceStrong(),
 		nullCipherConstructor(),
 		ivParameterSpecWithNewByteArray(),
+		keyStoreGetInstance(),
 	}
 }
 
@@ -64,6 +65,11 @@ func extractCipherAlgorithm(match []string, loc model.DetectionLocation) []model
 
 	if len(parts) > 1 && parts[1] != "" {
 		algo.Put(model.NewMode(parts[1]))
+	} else if prim == model.PrimitiveBlockCipher {
+		// No mode specified — Java silently defaults to ECB, which is insecure.
+		// Inject ECB explicitly so CBOM-ECB-001 fires on this asset.
+		algo.Put(model.NewMode("ECB"))
+		loc.MatchedText = loc.MatchedText + " [ECB inferred: no mode specified defaults to ECB in Java]"
 	}
 	if len(parts) > 2 && parts[2] != "" {
 		algo.Put(model.NewPadding(parts[2]))
@@ -191,6 +197,10 @@ func secretKeySpecConstructor() *detection.Rule {
 		MatchType: detection.MatchConstructor,
 		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
 			if len(match) < 2 {
+				return nil
+			}
+			// "RAW" is a key encoding format, not a crypto algorithm — skip it.
+			if strings.EqualFold(match[1], "RAW") {
 				return nil
 			}
 			algo := model.NewAlgorithm(match[1], classifyCipherPrimitive(match[1]), loc)
@@ -376,6 +386,28 @@ func secureRandomGetInstanceStrong() *detection.Rule {
 		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
 			algo := model.NewAlgorithm("SecureRandom.getInstanceStrong", model.PrimitivePRNG, loc)
 			algo.AddFunction(model.FuncGenerate)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- KeyStore.getInstance("JKS") / KeyStore.getInstance("PKCS12") ---
+// Captures the keystore type. JKS is a proprietary Sun format deprecated since
+// Java 9 in favour of PKCS12. It uses 3DES encryption and SHA-1 MACs, making
+// it weaker than the PKCS12 standard.
+
+func keyStoreGetInstance() *detection.Rule {
+	return &detection.Rule{
+		ID:        "jca-keystore-getInstance",
+		Language:  detection.LangJava,
+		Bundle:    "JCA",
+		Pattern:   regexp.MustCompile(`KeyStore\s*\.\s*getInstance\s*\(\s*"([^"]+)"`),
+		MatchType: detection.MatchMethodCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			algo := model.NewAlgorithm("KeyStore-"+match[1], model.PrimitiveUnknown, loc)
 			return []model.INode{algo}
 		},
 	}
