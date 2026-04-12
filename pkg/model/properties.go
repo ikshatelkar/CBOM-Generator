@@ -24,6 +24,7 @@ func NewTagLength(bits int) *IntProperty   { return newIntProp(bits, KindTagLeng
 func NewNonceLength(bits int) *IntProperty { return newIntProp(bits, KindNonceLength) }
 func NewSaltLength(bits int) *IntProperty  { return newIntProp(bits, KindSaltLength) }
 func NewIVLength(bits int) *IntProperty    { return newIntProp(bits, KindIVLength) }
+func NewClassicalSecurityLevel(bits int) *IntProperty { return newIntProp(bits, KindClassicalSecurityLevel) }
 
 // --- String property nodes ---
 

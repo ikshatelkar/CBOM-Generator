@@ -34,6 +34,9 @@ func jcaRules() []*detection.Rule {
 		nullCipherConstructor(),
 		ivParameterSpecWithNewByteArray(),
 		keyStoreGetInstance(),
+		keyStoreGetKey(),
+		keyStoreSetKeyEntry(),
+		jcaContentSignerBuilder(),
 	}
 }
 
@@ -408,6 +411,72 @@ func keyStoreGetInstance() *detection.Rule {
 				return nil
 			}
 			algo := model.NewAlgorithm("KeyStore-"+match[1], model.PrimitiveUnknown, loc)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- keyStore.getKey("alias", ...) ---
+// Captures the key alias used to retrieve a private/secret key from a KeyStore.
+// The alias becomes the component name, providing key-id information in the CBOM.
+
+func keyStoreGetKey() *detection.Rule {
+	return &detection.Rule{
+		ID:        "jca-keystore-getKey",
+		Language:  detection.LangJava,
+		Bundle:    "JCA",
+		Pattern:   regexp.MustCompile(`\.getKey\s*\(\s*"([^"]+)"`),
+		MatchType: detection.MatchMethodCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			key := model.NewKey(match[1], model.KindPrivateKey, loc)
+			return []model.INode{key}
+		},
+	}
+}
+
+// --- keyStore.setKeyEntry("alias", ...) ---
+// Captures the alias assigned when storing a private key in a KeyStore.
+// Provides key-id information and tracks which private keys are persisted.
+
+func keyStoreSetKeyEntry() *detection.Rule {
+	return &detection.Rule{
+		ID:        "jca-keystore-setKeyEntry",
+		Language:  detection.LangJava,
+		Bundle:    "JCA",
+		Pattern:   regexp.MustCompile(`\.setKeyEntry\s*\(\s*"([^"]+)"`),
+		MatchType: detection.MatchMethodCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			key := model.NewKey(match[1], model.KindPrivateKey, loc)
+			return []model.INode{key}
+		},
+	}
+}
+
+// --- JcaContentSignerBuilder (BouncyCastle certificate signing) ---
+// Detects X.509 certificate signing via BouncyCastle's JcaContentSignerBuilder.
+// The algorithm string (e.g. "SHA1withRSA", "MD5withRSA") specifies the hash+key
+// algorithm used to sign the certificate. Weak algorithms here directly produce
+// vulnerable certificates (CBOM-CERT-001, CBOM-CERT-002).
+
+func jcaContentSignerBuilder() *detection.Rule {
+	return &detection.Rule{
+		ID:        "jca-contentSignerBuilder",
+		Language:  detection.LangJava,
+		Bundle:    "JCA",
+		Pattern:   regexp.MustCompile(`new\s+JcaContentSignerBuilder\s*\(\s*"([^"]+)"`),
+		MatchType: detection.MatchConstructor,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			algo := model.NewAlgorithm(match[1], model.PrimitiveSignature, loc)
+			algo.AddFunction(model.FuncSign)
 			return []model.INode{algo}
 		},
 	}

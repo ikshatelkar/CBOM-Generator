@@ -2,6 +2,7 @@ package python
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/cbom-scanner/pkg/detection"
@@ -75,6 +76,16 @@ func allPythonRules() []*detection.Rule {
 		// ── PyJWT ────────────────────────────────────────────────────────────
 		pyjwtEncode(),
 		pyjwtDecode(),
+
+		// ── passlib ──────────────────────────────────────────────────────────
+		passlibHashUsing(),
+		passlibCryptImport(),
+
+		// ── paramiko (SSH) ───────────────────────────────────────────────────
+		paramikoRSAKey(),
+		paramikoECDSAKey(),
+		paramikoDSSKey(),
+		paramikoTransportAuth(),
 	}
 }
 
@@ -1044,5 +1055,202 @@ func classifyJWTAlgorithm(name string) model.Primitive {
 		return model.PrimitiveSignature
 	default:
 		return model.PrimitiveUnknown
+	}
+}
+
+// ============================================================================
+// passlib — Python password hashing library
+// ============================================================================
+
+// --- passlib.hash.<scheme>.using(...) / passlib.hash.<scheme>.hash(...) ---
+// Detects password hashing scheme selection via the passlib library.
+// e.g. from passlib.hash import md5_crypt, sha1_crypt, des_crypt, ldap_md5
+
+func passlibHashUsing() *detection.Rule {
+	return &detection.Rule{
+		ID:       "passlib-hash-using",
+		Language: detection.LangPython,
+		Bundle:   "passlib",
+		Pattern: regexp.MustCompile(
+			`\b(md5_crypt|sha1_crypt|sha256_crypt|sha512_crypt|des_crypt|bsdi_crypt|ldap_md5|ldap_sha|ldap_salted_md5|ldap_salted_sha|atlassian_pbkdf2_sha1|django_salted_md5|django_salted_sha1|pbkdf2_sha1|pbkdf2_sha256|pbkdf2_sha512|bcrypt|bcrypt_sha256|argon2|scrypt|apr_md5_crypt)\s*\.\s*(hash|verify|using|identify|encrypt)\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			name, prim := passlibSchemeName(match[1])
+			algo := model.NewAlgorithm(name, prim, loc)
+			algo.AddFunction(model.FuncKeyDerive)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- from passlib.hash import md5_crypt ---
+// Detects import of specific passlib hash schemes.
+
+func passlibCryptImport() *detection.Rule {
+	return &detection.Rule{
+		ID:       "passlib-import",
+		Language: detection.LangPython,
+		Bundle:   "passlib",
+		Pattern: regexp.MustCompile(
+			`from\s+passlib\.hash\s+import\s+([\w\s,]+)`),
+		MatchType: detection.MatchImport,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			var nodes []model.INode
+			for _, scheme := range strings.Split(match[1], ",") {
+				scheme = strings.TrimSpace(scheme)
+				if scheme == "" {
+					continue
+				}
+				name, prim := passlibSchemeName(scheme)
+				algo := model.NewAlgorithm(name, prim, loc)
+				algo.AddFunction(model.FuncKeyDerive)
+				nodes = append(nodes, algo)
+			}
+			return nodes
+		},
+	}
+}
+
+func passlibSchemeName(scheme string) (string, model.Primitive) {
+	switch scheme {
+	case "md5_crypt", "apr_md5_crypt":
+		return "MD5-crypt", model.PrimitivePasswordHash
+	case "sha1_crypt":
+		return "SHA1-crypt", model.PrimitivePasswordHash
+	case "sha256_crypt":
+		return "SHA256-crypt", model.PrimitivePasswordHash
+	case "sha512_crypt":
+		return "SHA512-crypt", model.PrimitivePasswordHash
+	case "des_crypt", "bsdi_crypt":
+		return "DES-crypt", model.PrimitivePasswordHash
+	case "ldap_md5", "ldap_salted_md5":
+		return "LDAP-MD5", model.PrimitivePasswordHash
+	case "ldap_sha", "ldap_salted_sha":
+		return "LDAP-SHA1", model.PrimitivePasswordHash
+	case "django_salted_md5":
+		return "Django-MD5", model.PrimitivePasswordHash
+	case "django_salted_sha1", "atlassian_pbkdf2_sha1":
+		return "Django-SHA1", model.PrimitivePasswordHash
+	case "pbkdf2_sha1":
+		return "PBKDF2-SHA1", model.PrimitivePasswordHash
+	case "pbkdf2_sha256":
+		return "PBKDF2-SHA256", model.PrimitivePasswordHash
+	case "pbkdf2_sha512":
+		return "PBKDF2-SHA512", model.PrimitivePasswordHash
+	case "bcrypt", "bcrypt_sha256":
+		return "bcrypt", model.PrimitivePasswordHash
+	case "argon2":
+		return "Argon2", model.PrimitivePasswordHash
+	case "scrypt":
+		return "scrypt", model.PrimitivePasswordHash
+	default:
+		return scheme, model.PrimitivePasswordHash
+	}
+}
+
+// ============================================================================
+// paramiko — Python SSH library
+// ============================================================================
+
+// --- paramiko.RSAKey.generate(bits=1024) ---
+
+func paramikoRSAKey() *detection.Rule {
+	return &detection.Rule{
+		ID:       "paramiko-rsa-key",
+		Language: detection.LangPython,
+		Bundle:   "paramiko",
+		Pattern: regexp.MustCompile(
+			`paramiko\s*\.\s*RSAKey\s*\.\s*generate\s*\(\s*(?:bits\s*=\s*)?(\d+)`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("RSA", model.PrimitivePublicKeyEncryption, loc)
+			algo.AddFunction(model.FuncKeyGen)
+			key := model.NewKey("RSA", model.KindPrivateKey, loc)
+			if len(match) >= 2 {
+				if bits, err := strconv.Atoi(match[1]); err == nil {
+					key.Put(model.NewKeyLength(bits))
+				}
+			}
+			key.Put(algo)
+			return []model.INode{key}
+		},
+	}
+}
+
+// --- paramiko.ECDSAKey.generate(bits=256) ---
+
+func paramikoECDSAKey() *detection.Rule {
+	return &detection.Rule{
+		ID:       "paramiko-ecdsa-key",
+		Language: detection.LangPython,
+		Bundle:   "paramiko",
+		Pattern: regexp.MustCompile(
+			`paramiko\s*\.\s*ECDSAKey\s*\.\s*generate\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("ECDSA", model.PrimitiveSignature, loc)
+			algo.AddFunction(model.FuncKeyGen)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- paramiko.DSSKey.generate(bits=1024) ---
+
+func paramikoDSSKey() *detection.Rule {
+	return &detection.Rule{
+		ID:       "paramiko-dss-key",
+		Language: detection.LangPython,
+		Bundle:   "paramiko",
+		Pattern: regexp.MustCompile(
+			`paramiko\s*\.\s*DSSKey\s*\.\s*generate\s*\(\s*(?:bits\s*=\s*)?(\d+)`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("DSA", model.PrimitiveSignature, loc)
+			algo.AddFunction(model.FuncKeyGen)
+			key := model.NewKey("DSA", model.KindPrivateKey, loc)
+			if len(match) >= 2 {
+				if bits, err := strconv.Atoi(match[1]); err == nil {
+					key.Put(model.NewKeyLength(bits))
+				}
+			}
+			key.Put(algo)
+			return []model.INode{key}
+		},
+	}
+}
+
+// --- paramiko.Transport: t.get_security_options().ciphers = ['aes128-cbc', 'des'] ---
+
+func paramikoTransportAuth() *detection.Rule {
+	return &detection.Rule{
+		ID:       "paramiko-transport-ciphers",
+		Language: detection.LangPython,
+		Bundle:   "paramiko",
+		Pattern: regexp.MustCompile(
+			`get_security_options\s*\(\s*\)\s*\.\s*ciphers\s*=\s*\[([^\]]+)\]`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			cipherPattern := regexp.MustCompile(`['"]([^'"]+)['"]`)
+			ciphers := cipherPattern.FindAllStringSubmatch(match[1], -1)
+			var nodes []model.INode
+			for _, c := range ciphers {
+				if len(c) < 2 {
+					continue
+				}
+				cs := model.NewCipherSuite(c[1], loc)
+				nodes = append(nodes, cs)
+			}
+			return nodes
+		},
 	}
 }

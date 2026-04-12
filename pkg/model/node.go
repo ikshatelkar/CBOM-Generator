@@ -18,6 +18,7 @@ const (
 	KindNonceLength   NodeKind = "NonceLength"
 	KindSaltLength    NodeKind = "SaltLength"
 	KindIVLength      NodeKind = "IVLength"
+	KindClassicalSecurityLevel NodeKind = "ClassicalSecurityLevel"
 	KindMode          NodeKind = "Mode"
 	KindPadding       NodeKind = "Padding"
 	KindOid           NodeKind = "Oid"

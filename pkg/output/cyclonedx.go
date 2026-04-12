@@ -89,6 +89,7 @@ type AlgorithmProperties struct {
 	CryptoFunctions        []string `json:"cryptoFunctions,omitempty"`
 	Mode                   string   `json:"mode,omitempty"`
 	Padding                string   `json:"padding,omitempty"`
+	ClassicalSecurityLevel int      `json:"classicalSecurityLevel,omitempty"`
 }
 
 type ProtocolProperties struct {
@@ -212,6 +213,11 @@ func (g *Generator) addAlgorithm(algo *model.Algorithm, parentRef string) string
 	}
 	if curveNode, ok := algo.HasChildOfKind(model.KindCurve); ok {
 		algProps.Curve = curveNode.AsString()
+	}
+	if cslNode, ok := algo.HasChildOfKind(model.KindClassicalSecurityLevel); ok {
+		if ip, ok2 := cslNode.(*model.IntProperty); ok2 {
+			algProps.ClassicalSecurityLevel = ip.Value
+		}
 	}
 
 	cp := &CryptoProperties{

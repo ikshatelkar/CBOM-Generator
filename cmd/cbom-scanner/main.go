@@ -96,6 +96,7 @@ func main() {
 	java.RegisterJCADetectionRules(registry)
 	java.RegisterBouncyCastleDetectionRules(registry)
 	java.RegisterSpringDetectionRules(registry)
+	java.RegisterCommonsDetectionRules(registry)
 	python.RegisterAllPythonDetectionRules(registry)
 
 	ruleCount := len(registry.AllRules())

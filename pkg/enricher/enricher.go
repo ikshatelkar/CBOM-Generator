@@ -58,6 +58,19 @@ func enrichNode(node model.INode) {
 		}
 	}
 
+	// Add classical security level
+	if _, exists := algo.HasChildOfKind(model.KindClassicalSecurityLevel); !exists {
+		keyLen := 0
+		if kl, ok := algo.HasChildOfKind(model.KindKeyLength); ok {
+			if ip, ok2 := kl.(*model.IntProperty); ok2 {
+				keyLen = ip.Value
+			}
+		}
+		if level := computeClassicalSecurityLevel(name, algo.PrimitiveType, keyLen); level > 0 {
+			algo.Put(model.NewClassicalSecurityLevel(level))
+		}
+	}
+
 	// Enrich children recursively
 	for _, child := range algo.Children() {
 		enrichNode(child)
@@ -180,4 +193,194 @@ var blockSizes = map[string]int{
 	"SEED":      128,
 	"CAST5":     64,
 	"IDEA":      64,
+}
+
+// --- Classical Security Level computation ---
+// Based on NIST SP 800-57 Part 1 Rev 5 (Table 2) and standard definitions.
+// Security level is expressed in bits of classical (non-quantum) security.
+
+func computeClassicalSecurityLevel(name string, prim model.Primitive, keyLen int) int {
+	switch prim {
+	case model.PrimitiveBlockCipher, model.PrimitiveStreamCipher, model.PrimitiveAEAD:
+		return symmetricSecurityLevel(name, keyLen)
+	case model.PrimitiveHash, model.PrimitiveXOF:
+		return hashSecurityLevel(name)
+	case model.PrimitiveMAC:
+		return macSecurityLevel(name, keyLen)
+	case model.PrimitiveSignature, model.PrimitivePublicKeyEncryption,
+		model.PrimitiveKeyAgreement, model.PrimitiveKeyEncapsulation:
+		return asymmetricSecurityLevel(name, keyLen)
+	case model.PrimitiveKeyDerivation, model.PrimitivePasswordHash:
+		return kdfSecurityLevel(name)
+	}
+	return 0
+}
+
+// symmetricSecurityLevel returns the security level for symmetric ciphers.
+// For symmetric encryption, security level = key length (brute-force bound).
+// Exception: 3DES has a meet-in-the-middle effective strength of ~112 bits.
+func symmetricSecurityLevel(name string, keyLen int) int {
+	switch name {
+	case "DES":
+		return 56
+	case "3DES", "TDEA", "DESEDE", "TRIPLEDES":
+		return 112 // effective due to meet-in-the-middle attack
+	case "RC4", "ARC4":
+		if keyLen > 0 {
+			return keyLen
+		}
+		return 128
+	case "CHACHA20":
+		return 256
+	case "AES", "AES256":
+		if keyLen > 0 {
+			return keyLen
+		}
+		return 256
+	default:
+		if keyLen > 0 {
+			return keyLen
+		}
+	}
+	return 0
+}
+
+// hashSecurityLevel returns the collision-resistance security level.
+// For hash functions, classical security = output_size / 2 (birthday bound).
+// MD5 and SHA-1 are marked at their theoretical value; both are practically broken.
+func hashSecurityLevel(name string) int {
+	switch name {
+	case "MD2", "MD4", "MD5":
+		return 64 // 128-bit output / 2; broken in practice
+	case "SHA1", "SHA-1":
+		return 80 // 160-bit output / 2; broken (SHAttered ~57 bits actual)
+	case "SHA-224", "SHA224", "SHA3-224", "SHA3_224":
+		return 112
+	case "SHA-256", "SHA256", "SHA3-256", "SHA3_256", "SM3":
+		return 128
+	case "SHA-384", "SHA384", "SHA3-384", "SHA3_384":
+		return 192
+	case "SHA-512", "SHA512", "SHA3-512", "SHA3_512":
+		return 256
+	case "SHA-512/224", "SHA512_224":
+		return 112
+	case "SHA-512/256", "SHA512_256":
+		return 128
+	case "BLAKE2B":
+		return 256
+	case "BLAKE2S":
+		return 128
+	case "BLAKE3":
+		return 128
+	case "RIPEMD", "RIPEMD160":
+		return 80 // 160-bit output / 2
+	}
+	return 0
+}
+
+// macSecurityLevel returns the security level for MAC algorithms.
+// For HMAC, security = min(key_len, hash_output / 2).
+func macSecurityLevel(name string, keyLen int) int {
+	var hashBits int
+	switch {
+	case strings.Contains(name, "MD5"):
+		hashBits = 64
+	case strings.Contains(name, "SHA1") || strings.Contains(name, "SHA-1"):
+		hashBits = 80
+	case strings.Contains(name, "SHA256") || strings.Contains(name, "SHA-256"):
+		hashBits = 128
+	case strings.Contains(name, "SHA384") || strings.Contains(name, "SHA-384"):
+		hashBits = 192
+	case strings.Contains(name, "SHA512") || strings.Contains(name, "SHA-512"):
+		hashBits = 256
+	default:
+		hashBits = 128
+	}
+	if keyLen > 0 && keyLen < hashBits {
+		return keyLen
+	}
+	return hashBits
+}
+
+// asymmetricSecurityLevel returns the classical security level for asymmetric algorithms.
+// Uses NIST SP 800-57 Part 1 Rev 5, Table 2.
+func asymmetricSecurityLevel(name string, keyLen int) int {
+	switch name {
+	case "ED25519", "X25519":
+		return 128
+	case "ED448", "X448":
+		return 224
+	case "RSA", "DSA", "DH":
+		return ffdhSecurityLevel(keyLen)
+	case "EC", "ECDSA", "ECDH":
+		return ecSecurityLevel(keyLen)
+	case "P-224":
+		return 112
+	case "P-256":
+		return 128
+	case "P-384":
+		return 192
+	case "P-521":
+		return 260
+	}
+	// For other asymmetric algorithms, fall back to FFDHE table
+	if keyLen > 0 {
+		return ffdhSecurityLevel(keyLen)
+	}
+	return 0
+}
+
+// ffdhSecurityLevel maps RSA/DSA/DH key sizes to classical security levels.
+// Source: NIST SP 800-57 Part 1 Rev 5, Table 2.
+func ffdhSecurityLevel(keyLen int) int {
+	switch {
+	case keyLen < 1024:
+		return 56
+	case keyLen < 2048:
+		return 80
+	case keyLen < 3072:
+		return 112
+	case keyLen < 4096:
+		return 128
+	case keyLen < 7680:
+		return 140
+	case keyLen < 15360:
+		return 192
+	default:
+		return 256
+	}
+}
+
+// ecSecurityLevel maps ECC key sizes to classical security levels.
+// For ECC, the classical security level is approximately keyLen / 2.
+func ecSecurityLevel(keyLen int) int {
+	switch {
+	case keyLen <= 0:
+		return 0
+	case keyLen <= 224:
+		return 112
+	case keyLen <= 256:
+		return 128
+	case keyLen <= 384:
+		return 192
+	default:
+		return keyLen / 2
+	}
+}
+
+// kdfSecurityLevel returns a nominal security level for KDFs and password hashers.
+func kdfSecurityLevel(name string) int {
+	switch name {
+	case "PBKDF2", "PBKDF2HMAC":
+		return 128 // depends on hash; assume SHA-256 default
+	case "BCRYPT":
+		return 128
+	case "SCRYPT":
+		return 128
+	case "ARGON2", "ARGON2ID", "ARGON2I", "ARGON2D":
+		return 128
+	case "HKDF":
+		return 128
+	}
+	return 0
 }

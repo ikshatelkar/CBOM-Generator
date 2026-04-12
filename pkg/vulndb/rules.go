@@ -1007,4 +1007,232 @@ func RegisterAllRules(registry *VulnRuleRegistry) {
 				upper == "MAGMA"
 		},
 	})
+
+	// -------------------------------------------------------------------------
+	// CBOM-NATIONAL-002: SM2 / SM3 / SM4 (Chinese national algorithms)
+	// -------------------------------------------------------------------------
+	registry.Register(&VulnRule{
+		ID:       "CBOM-NATIONAL-002",
+		Category: "national",
+		Title:    "SM2/SM3/SM4 — Chinese National Cryptographic Algorithms",
+		Description: "The ShangMi (SM) family — SM2 (elliptic-curve signature/key exchange), " +
+			"SM3 (hash), and SM4 (block cipher) — are Chinese national standards mandated " +
+			"by GB/T regulations. They have received limited independent public cryptanalysis " +
+			"compared to NIST-approved algorithms and have restricted geographic deployment. " +
+			"Per RFC 7696 §3.4, national cipher suites should be disabled by default and " +
+			"enabled only where legally required. CERT-In Technical Guidelines on CBOM " +
+			"(v2.0, 2025) recommend alignment with internationally reviewed standards.",
+		Severity:   "low",
+		References: []string{"RFC 7696 §3.4", "GB/T 32905-2016 (SM3)", "GB/T 32907-2016 (SM4)", "GB/T 32918-2016 (SM2)", "CERT-In CBOM Guidelines v2.0"},
+		Recommendation: "Disable SM algorithms unless required by regulatory mandate (e.g. Chinese MLPS). " +
+			"Where interoperability is not restricted, prefer NIST-approved equivalents: " +
+			"SHA-256/SHA-3 (hash), ECDSA P-256 (signature), AES-256-GCM (encryption).",
+		Match: func(node model.INode) bool {
+			a, ok := node.(*model.Algorithm)
+			if !ok {
+				return false
+			}
+			upper := strings.ToUpper(a.Name)
+			return upper == "SM2" || upper == "SM3" || upper == "SM4" ||
+				strings.HasPrefix(upper, "SM2") ||
+				strings.HasPrefix(upper, "SM3") ||
+				strings.HasPrefix(upper, "SM4")
+		},
+	})
+
+	// -------------------------------------------------------------------------
+	// CBOM-NATIONAL-003: SEED / ARIA (Korean national algorithms)
+	// -------------------------------------------------------------------------
+	registry.Register(&VulnRule{
+		ID:       "CBOM-NATIONAL-003",
+		Category: "national",
+		Title:    "SEED/ARIA — Korean National Cryptographic Algorithms",
+		Description: "SEED and ARIA are Korean national block cipher standards (128-bit key, " +
+			"128-bit block) defined by the Korea Internet & Security Agency (KISA). They are " +
+			"mandatory in some Korean government and financial systems. Like other national " +
+			"algorithms, they have received limited international public cryptanalysis and " +
+			"have restricted geographic deployment. Per RFC 7696 §3.4, national cipher " +
+			"suites should be disabled by default and enabled only where legally required.",
+		Severity:   "low",
+		References: []string{"RFC 7696 §3.4", "RFC 4269 (SEED)", "RFC 5794 (ARIA)", "KISA SEED Specification", "CERT-In CBOM Guidelines v2.0"},
+		Recommendation: "Disable SEED/ARIA unless required by Korean regulatory mandate (e.g. ISMS-P). " +
+			"Where interoperability is not restricted, prefer AES-256-GCM.",
+		Match: func(node model.INode) bool {
+			a, ok := node.(*model.Algorithm)
+			if !ok {
+				return false
+			}
+			upper := strings.ToUpper(a.Name)
+			return upper == "SEED" || upper == "ARIA" ||
+				strings.HasPrefix(upper, "SEED") ||
+				strings.HasPrefix(upper, "ARIA")
+		},
+	})
+
+	// ==========================================================================
+	// CERTIFICATE SIGNATURE ALGORITHMS
+	// Covers weak hash functions used to sign X.509 certificates or in
+	// signature algorithms detected via JCA / BouncyCastle certificate APIs.
+	// Per CERT-In CBOM Guidelines v2.0 Table 9, the certificate signature
+	// algorithm is a required minimum element of the CBOM.
+	// ==========================================================================
+
+	// -------------------------------------------------------------------------
+	// CBOM-CERT-001: MD5 as certificate / signature algorithm
+	// -------------------------------------------------------------------------
+	registry.Register(&VulnRule{
+		ID:       "CBOM-CERT-001",
+		Category: "certificate",
+		Title:    "MD5-Based Signature Algorithm — Collision-Vulnerable Certificate",
+		Description: "Signature algorithms using MD5 as the underlying hash (e.g. MD5withRSA, " +
+			"MD5WithRSAEncryption, MD5withECDSA) produce certificates and digital signatures " +
+			"that are vulnerable to chosen-prefix collision attacks. An attacker can forge a " +
+			"certificate that has the same MD5 signature as a legitimate one, enabling " +
+			"man-in-the-middle attacks. MD5 has been prohibited for certificate signing by " +
+			"CA/Browser Forum since 2008 and by NIST SP 800-131A Rev 2.",
+		Severity:   "critical",
+		References: []string{"NIST SP 800-131A Rev 2", "RFC 6151", "CVE-2004-2761", "CA/Browser Forum Baseline Requirements", "CERT-In CBOM Guidelines v2.0 Table 9"},
+		Recommendation: "Replace with SHA-256withRSA, SHA-384withRSA, or SHA-256withECDSA. " +
+			"Revoke and reissue any certificates signed with MD5.",
+		Match: func(node model.INode) bool {
+			a, ok := node.(*model.Algorithm)
+			if !ok {
+				return false
+			}
+			if a.PrimitiveType != model.PrimitiveSignature {
+				return false
+			}
+			upper := strings.ToUpper(a.Name)
+			return strings.Contains(upper, "MD5WITH") ||
+				strings.Contains(upper, "MD5WITHRSA") ||
+				strings.HasPrefix(upper, "MD5WITH")
+		},
+	})
+
+	// -------------------------------------------------------------------------
+	// CBOM-CERT-002: SHA-1 as certificate / signature algorithm
+	// -------------------------------------------------------------------------
+	registry.Register(&VulnRule{
+		ID:       "CBOM-CERT-002",
+		Category: "certificate",
+		Title:    "SHA-1-Based Signature Algorithm — Deprecated Certificate Signing",
+		Description: "Signature algorithms using SHA-1 as the underlying hash (e.g. SHA1withRSA, " +
+			"SHA-1withRSA, SHA1withECDSA) produce certificates vulnerable to chosen-prefix " +
+			"collision attacks (SHAttered, 2017). Major browsers have rejected SHA-1 signed " +
+			"certificates since 2017. NIST SP 800-131A Rev 2 disallows SHA-1 for digital " +
+			"signatures. CA/Browser Forum prohibited SHA-1 TLS certificates from 2016.",
+		Severity:   "high",
+		References: []string{"NIST SP 800-131A Rev 2", "RFC 9155", "https://shattered.io", "CA/Browser Forum Baseline Requirements", "CERT-In CBOM Guidelines v2.0 Table 9"},
+		Recommendation: "Replace with SHA-256withRSA, SHA-384withRSA, or SHA-256withECDSA. " +
+			"Revoke and reissue any certificates signed with SHA-1.",
+		Match: func(node model.INode) bool {
+			a, ok := node.(*model.Algorithm)
+			if !ok {
+				return false
+			}
+			if a.PrimitiveType != model.PrimitiveSignature {
+				return false
+			}
+			upper := strings.ToUpper(a.Name)
+			return strings.Contains(upper, "SHA1WITH") ||
+				strings.Contains(upper, "SHA-1WITH") ||
+				strings.Contains(upper, "SHA1WITHRSA") ||
+				strings.Contains(upper, "SHA1WITHECDSA")
+		},
+	})
+
+	// ==========================================================================
+	// JWT ALGORITHMS
+	// Covers JWT algorithm misuse: the "none" algorithm and weak HMAC choices.
+	// ==========================================================================
+
+	// CBOM-JWT-001: JWT "none" algorithm — no signature
+	registry.Register(&VulnRule{
+		ID:       "CBOM-JWT-001",
+		Category: "jwt",
+		Title:    "JWT Algorithm 'none' — Unsigned Token Accepted",
+		Description: "The JWT specification allows the algorithm field to be set to 'none', " +
+			"meaning the token carries no signature and cannot be verified for integrity or " +
+			"authenticity. Accepting tokens with algorithm 'none' allows an attacker to forge " +
+			"arbitrary tokens and bypass authentication entirely. This is CVE-2015-9235 " +
+			"(JJWT) and a systemic class of vulnerability across many JWT libraries.",
+		Severity:   "critical",
+		References: []string{"CVE-2015-9235", "RFC 7519 §6", "CWE-347", "CERT-In CBOM Guidelines v2.0"},
+		Recommendation: "Never accept 'none' as a valid algorithm. Explicitly whitelist only " +
+			"strong signing algorithms (RS256, ES256, PS256 or stronger). " +
+			"In JJWT use parseClaimsJws() (with 's') not parseClaimsJwt(). " +
+			"In Nimbus, never add JWSAlgorithm.NONE to the allowed algorithms list.",
+		Match: func(node model.INode) bool {
+			a, ok := node.(*model.Algorithm)
+			if !ok {
+				return false
+			}
+			return strings.ToUpper(a.Name) == "NONE" &&
+				(a.PrimitiveType == model.PrimitiveSignature || a.PrimitiveType == model.PrimitiveMAC)
+		},
+	})
+
+	// CBOM-JWT-002: JWT HMAC with weak hash (HS256 weak secret risk)
+	// HS256 uses HMAC-SHA256 which is symmetric — the same secret signs and verifies.
+	// The token can be brute-forced offline if the secret is weak.
+	registry.Register(&VulnRule{
+		ID:       "CBOM-JWT-002",
+		Category: "jwt",
+		Title:    "JWT HMAC Algorithm — Symmetric Signing (Secret Can Be Brute-Forced)",
+		Description: "JWT HMAC algorithms (HS256, HS384, HS512) use a shared symmetric secret " +
+			"for both signing and verification. Unlike asymmetric algorithms (RS256, ES256), " +
+			"the verifier and signer share the same key. Any party with the verification key " +
+			"can also forge tokens. Additionally, tokens signed with short/weak secrets are " +
+			"vulnerable to offline brute-force attacks since JWTs are not rate-limited.",
+		Severity:   "medium",
+		References: []string{"RFC 7519", "CWE-327", "OWASP JWT Security Cheat Sheet"},
+		Recommendation: "Prefer asymmetric algorithms (RS256, PS256, ES256, EdDSA) for " +
+			"server-to-server or cross-service token validation. If HS256 must be used, " +
+			"ensure the secret is at least 256 bits of cryptographically random data.",
+		Match: func(node model.INode) bool {
+			a, ok := node.(*model.Algorithm)
+			if !ok {
+				return false
+			}
+			upper := strings.ToUpper(a.Name)
+			return a.PrimitiveType == model.PrimitiveMAC &&
+				(upper == "HS256" || upper == "HS384" || upper == "HS512")
+		},
+	})
+
+	// ==========================================================================
+	// INSECURE RANDOM NUMBER GENERATORS (additional)
+	// ==========================================================================
+
+	// CBOM-RNG-003: passlib weak password hash schemes (MD5-crypt, SHA1-crypt, DES-crypt)
+	registry.Register(&VulnRule{
+		ID:       "CBOM-RNG-003",
+		Category: "kdf",
+		Title:    "passlib Weak Password Hash Scheme — MD5/SHA1/DES-crypt",
+		Description: "The passlib schemes md5_crypt, sha1_crypt, des_crypt, and apr_md5_crypt " +
+			"use outdated and fast hash functions that can be cracked at billions of hashes " +
+			"per second on modern GPUs. They provide no meaningful work factor against " +
+			"offline dictionary attacks. MD5-crypt and SHA-crypt were designed for Unix /etc/shadow " +
+			"and are no longer considered adequate for password storage.",
+		Severity:   "high",
+		References: []string{"NIST SP 800-63B §5.1.1", "CWE-916", "OWASP Password Storage Cheat Sheet"},
+		Recommendation: "Migrate to bcrypt, Argon2id, or scrypt. " +
+			"In passlib use argon2.using(time_cost=2, memory_cost=65536) or bcrypt.using(rounds=12).",
+		Match: func(node model.INode) bool {
+			a, ok := node.(*model.Algorithm)
+			if !ok {
+				return false
+			}
+			name := strings.ToUpper(a.Name)
+			return a.PrimitiveType == model.PrimitivePasswordHash &&
+				(strings.HasPrefix(name, "MD5-CRYPT") ||
+					strings.HasPrefix(name, "SHA1-CRYPT") ||
+					strings.HasPrefix(name, "DES-CRYPT") ||
+					strings.HasPrefix(name, "LDAP-MD5") ||
+					strings.HasPrefix(name, "LDAP-SHA1") ||
+					strings.HasPrefix(name, "DJANGO-MD5") ||
+					strings.HasPrefix(name, "DJANGO-SHA1") ||
+					strings.HasPrefix(name, "PBKDF2-SHA1"))
+		},
+	})
 }
