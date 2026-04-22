@@ -12,8 +12,15 @@ import (
 	"github.com/cbom-scanner/pkg/enricher"
 	"github.com/cbom-scanner/pkg/model"
 	"github.com/cbom-scanner/pkg/output"
+	"github.com/cbom-scanner/pkg/rules/csharp"
+	"github.com/cbom-scanner/pkg/rules/flutter"
+	"github.com/cbom-scanner/pkg/rules/golang"
 	"github.com/cbom-scanner/pkg/rules/java"
+	"github.com/cbom-scanner/pkg/rules/javascript"
+	"github.com/cbom-scanner/pkg/rules/php"
 	"github.com/cbom-scanner/pkg/rules/python"
+	"github.com/cbom-scanner/pkg/rules/ruby"
+	"github.com/cbom-scanner/pkg/rules/rust"
 	"github.com/cbom-scanner/pkg/vex"
 	"github.com/cbom-scanner/pkg/vulndb"
 )
@@ -98,6 +105,14 @@ func main() {
 	java.RegisterSpringDetectionRules(registry)
 	java.RegisterCommonsDetectionRules(registry)
 	python.RegisterAllPythonDetectionRules(registry)
+	golang.RegisterGoDetectionRules(registry)
+	flutter.RegisterFlutterDetectionRules(registry)
+	javascript.RegisterJSDetectionRules(registry)
+	javascript.RegisterTSDetectionRules(registry)
+	csharp.RegisterCSharpDetectionRules(registry)
+	php.RegisterPHPDetectionRules(registry)
+	ruby.RegisterRubyDetectionRules(registry)
+	rust.RegisterRustDetectionRules(registry)
 
 	ruleCount := len(registry.AllRules())
 	fmt.Printf("Loaded %d detection rules\n", ruleCount)

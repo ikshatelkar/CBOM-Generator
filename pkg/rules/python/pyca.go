@@ -656,7 +656,7 @@ func pyHashlibAlgo() *detection.Rule {
 		Language: detection.LangPython,
 		Bundle:   "hashlib",
 		Pattern: regexp.MustCompile(
-			`hashlib\s*\.\s*(md5|sha1|sha224|sha256|sha384|sha512|sha3_224|sha3_256|sha3_384|sha3_512|blake2b|blake2s|sm3)\s*\(`),
+			`hashlib\s*\.\s*(md5|sha1|sha224|sha256|sha384|sha512|sha3_224|sha3_256|sha3_384|sha3_512|shake_128|shake_256|blake2b|blake2s|sm3)\s*\(`),
 		MatchType: detection.MatchFunctionCall,
 		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
 			if len(match) < 2 {
@@ -989,7 +989,7 @@ func pyjwtEncode() *detection.Rule {
 		Language: detection.LangPython,
 		Bundle:   "PyJWT",
 		Pattern: regexp.MustCompile(
-			`jwt\s*\.\s*encode\s*\([^)]*algorithm\s*=\s*["']([A-Z0-9]+)["']`),
+			`jwt\s*\.\s*encode\s*\([^)]*algorithm\s*=\s*["']([A-Za-z0-9]+)["']`),
 		MatchType: detection.MatchFunctionCall,
 		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
 			if len(match) < 2 {
@@ -1012,7 +1012,7 @@ func pyjwtDecode() *detection.Rule {
 		Language: detection.LangPython,
 		Bundle:   "PyJWT",
 		Pattern: regexp.MustCompile(
-			`jwt\s*\.\s*decode\s*\([^)]*algorithms\s*=\s*\[\s*["']([A-Z0-9]+)["']`),
+			`jwt\s*\.\s*decode\s*\([^)]*algorithms\s*=\s*\[\s*["']([A-Za-z0-9]+)["']`),
 		MatchType: detection.MatchFunctionCall,
 		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
 			if len(match) < 2 {
@@ -1053,6 +1053,9 @@ func classifyJWTAlgorithm(name string) model.Primitive {
 		return model.PrimitiveSignature
 	case name == "EDDSA", strings.HasPrefix(name, "ED"):
 		return model.PrimitiveSignature
+	case strings.EqualFold(name, "none"):
+		// "none" disables signing — treated as MAC so CBOM-JWT-001 fires.
+		return model.PrimitiveMAC
 	default:
 		return model.PrimitiveUnknown
 	}

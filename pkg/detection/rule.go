@@ -10,9 +10,16 @@ import (
 type Language string
 
 const (
-	LangJava   Language = "java"
-	LangPython Language = "python"
-	LangGo     Language = "go"
+	LangJava       Language = "java"
+	LangPython     Language = "python"
+	LangGo         Language = "go"
+	LangDart       Language = "dart"
+	LangJavaScript Language = "javascript"
+	LangTypeScript Language = "typescript"
+	LangCSharp     Language = "csharp"
+	LangPHP        Language = "php"
+	LangRuby       Language = "ruby"
+	LangRust       Language = "rust"
 )
 
 // MatchType indicates how a rule matches source lines.

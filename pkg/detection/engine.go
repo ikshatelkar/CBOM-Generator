@@ -183,6 +183,20 @@ func languageFromExt(path string) Language {
 		return LangPython
 	case ".go":
 		return LangGo
+	case ".dart":
+		return LangDart
+	case ".js", ".jsx", ".mjs", ".cjs":
+		return LangJavaScript
+	case ".ts", ".tsx":
+		return LangTypeScript
+	case ".cs":
+		return LangCSharp
+	case ".php":
+		return LangPHP
+	case ".rb":
+		return LangRuby
+	case ".rs":
+		return LangRust
 	default:
 		return ""
 	}
