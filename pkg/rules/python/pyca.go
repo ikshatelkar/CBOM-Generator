@@ -51,6 +51,13 @@ func allPythonRules() []*detection.Rule {
 		pycaBlake3(),
 		oqsKeyEncapsulation(),
 		oqsSignature(),
+		pycaMLDSA(),
+		pycaMLKEM(),
+		pycaArgon2(),
+		pycaPoly1305(),
+		pycaECDHExchange(),
+		pycaBcrypt(),
+		pycaRSADecrypt(),
 
 		// ── Python standard library ──────────────────────────────────────────
 		pyHashlibAlgo(),
@@ -86,6 +93,22 @@ func allPythonRules() []*detection.Rule {
 		paramikoECDSAKey(),
 		paramikoDSSKey(),
 		paramikoTransportAuth(),
+
+		// ── gap-fill: bare imports / stdlib / DH / misc ──────────────────────
+		pycaTripleDESBare(),
+		pyDiffieHellmanKexClass(),
+		pycaDHHazmat(),
+		pyStdlibHMACBare(),
+		pyOsUrandom(),
+		pyHashlibBareCall(),
+		pycaHashReference(),
+		pynaclVerifyKey(),
+		pycaECDSASign(),
+		pycaX25519PublicKey(),
+		pycaPKCS1v15(),
+		pycaPKCS7(),
+		pycaECCurveStandalone(),
+		pycaModeReference(),
 	}
 }
 
@@ -125,7 +148,7 @@ func pycaCipherMode() *detection.Rule {
 		Language: detection.LangPython,
 		Bundle:   "Pyca",
 		Pattern: regexp.MustCompile(
-			`modes\s*\.\s*(CBC|CTR|OFB|CFB|CFB8|GCM|XTS|ECB)\s*\(`),
+			`modes\s*\.\s*(CBC|CTR|OFB|CFB|CFB8|GCM|XTS|ECB|SIV|CCM)\s*\(`),
 		MatchType: detection.MatchFunctionCall,
 		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
 			if len(match) < 2 {
@@ -144,7 +167,7 @@ func pycaAEADCipher() *detection.Rule {
 		Language: detection.LangPython,
 		Bundle:   "Pyca",
 		Pattern: regexp.MustCompile(
-			`(?:aead\s*\.\s*|from\s+.*aead\s+import\s+.*\b)(AESGCM|AESCCM|AESGCMSIV|AESSIV|AEOCB3|ChaCha20Poly1305|XCHACHA20POLY1305)\s*\(`),
+			`(?:aead\s*\.\s*|from\s+.*aead\s+import\s+.*\b)(AESGCM|AESCCM|AESGCMSIV|AESSIV|AESOCB3|ChaCha20Poly1305|XChaCha20Poly1305)\s*\(`),
 		MatchType: detection.MatchFunctionCall,
 		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
 			if len(match) < 2 {
@@ -639,6 +662,148 @@ func oqsSignature() *detection.Rule {
 			algo := model.NewAlgorithm(match[1], model.PrimitiveSignature, loc)
 			algo.AddFunction(model.FuncSign)
 			algo.AddFunction(model.FuncVerify)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- ML-DSA (FIPS 204 / Dilithium): MLDSAPrivateKey.generate(MLDSAParameters.MLDSA44) ---
+
+func pycaMLDSA() *detection.Rule {
+	return &detection.Rule{
+		ID:       "pyca-mldsa",
+		Language: detection.LangPython,
+		Bundle:   "Pyca",
+		Pattern: regexp.MustCompile(
+			`MLDSAPrivateKey\s*\.\s*generate\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("ML-DSA", model.PrimitiveSignature, loc)
+			algo.AddFunction(model.FuncKeyGen)
+			privKey := model.NewKey("ML-DSA", model.KindPrivateKey, loc)
+			privKey.Put(algo)
+			return []model.INode{privKey}
+		},
+	}
+}
+
+// --- ML-KEM (FIPS 203 / Kyber): MLKEMPrivateKey.generate(MLKEMParameters.MLKEM512) ---
+
+func pycaMLKEM() *detection.Rule {
+	return &detection.Rule{
+		ID:       "pyca-mlkem",
+		Language: detection.LangPython,
+		Bundle:   "Pyca",
+		Pattern: regexp.MustCompile(
+			`MLKEMPrivateKey\s*\.\s*generate\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("ML-KEM", model.PrimitiveKeyEncapsulation, loc)
+			algo.AddFunction(model.FuncKeyGen)
+			algo.AddFunction(model.FuncEncapsulate)
+			algo.AddFunction(model.FuncDecapsulate)
+			privKey := model.NewKey("ML-KEM", model.KindPrivateKey, loc)
+			privKey.Put(algo)
+			return []model.INode{privKey}
+		},
+	}
+}
+
+// --- pyca native Argon2: Argon2id(...), Argon2i(...), Argon2d(...) ---
+// from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
+
+func pycaArgon2() *detection.Rule {
+	return &detection.Rule{
+		ID:       "pyca-argon2",
+		Language: detection.LangPython,
+		Bundle:   "Pyca",
+		Pattern: regexp.MustCompile(
+			`\b(Argon2id|Argon2i|Argon2d)\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			algo := model.NewAlgorithm(match[1], model.PrimitivePasswordHash, loc)
+			algo.AddFunction(model.FuncKeyDerive)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- Poly1305 MAC: poly1305.Poly1305(key) ---
+// from cryptography.hazmat.primitives.poly1305 import Poly1305
+
+func pycaPoly1305() *detection.Rule {
+	return &detection.Rule{
+		ID:       "pyca-poly1305",
+		Language: detection.LangPython,
+		Bundle:   "Pyca",
+		Pattern: regexp.MustCompile(
+			`(?:poly1305\s*\.\s*)?Poly1305\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("Poly1305", model.PrimitiveMAC, loc)
+			algo.AddFunction(model.FuncTag)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- ECDH key exchange: private_key.exchange(ec.ECDH(), peer_public_key) ---
+
+func pycaECDHExchange() *detection.Rule {
+	return &detection.Rule{
+		ID:       "pyca-ecdh-exchange",
+		Language: detection.LangPython,
+		Bundle:   "Pyca",
+		Pattern: regexp.MustCompile(
+			`\.exchange\s*\(\s*(?:ec\s*\.\s*)?ECDH\s*\(`),
+		MatchType: detection.MatchMethodCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("ECDH", model.PrimitiveKeyAgreement, loc)
+			algo.AddFunction(model.FuncKeyDerive)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- pyca native bcrypt KDF: bcrypt(password, salt, rounds, backend) ---
+// from cryptography.hazmat.primitives.kdf.bcrypt import bcrypt
+
+func pycaBcrypt() *detection.Rule {
+	return &detection.Rule{
+		ID:       "pyca-bcrypt",
+		Language: detection.LangPython,
+		Bundle:   "Pyca",
+		Pattern: regexp.MustCompile(
+			`from\s+cryptography[.\w]*kdf\.bcrypt\s+import\s+bcrypt|kdf\.bcrypt\.bcrypt\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("bcrypt", model.PrimitivePasswordHash, loc)
+			algo.AddFunction(model.FuncKeyDerive)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- RSA decryption: private_key.decrypt(ciphertext, padding.OAEP/PKCS1v15) ---
+
+func pycaRSADecrypt() *detection.Rule {
+	return &detection.Rule{
+		ID:       "pyca-rsa-decrypt",
+		Language: detection.LangPython,
+		Bundle:   "Pyca",
+		Pattern: regexp.MustCompile(
+			`\.decrypt\s*\([^)]*padding\s*\.\s*(OAEP|PKCS1v15)`),
+		MatchType: detection.MatchMethodCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			algo := model.NewAlgorithm("RSA", model.PrimitivePublicKeyEncryption, loc)
+			algo.AddFunction(model.FuncDecrypt)
+			algo.Put(model.NewPadding(match[1]))
 			return []model.INode{algo}
 		},
 	}
@@ -1254,6 +1419,282 @@ func paramikoTransportAuth() *detection.Rule {
 				nodes = append(nodes, cs)
 			}
 			return nodes
+		},
+	}
+}
+
+// ============================================================================
+// Additional gap-fill rules discovered via paramiko analysis
+// ============================================================================
+
+// --- TripleDES bare import: from cryptography...algorithms import TripleDES; TripleDES(key) ---
+// Catches usages where TripleDES is imported directly and called without the
+// "algorithms." prefix (e.g. paramiko/transport.py, paramiko/pkey.py).
+
+func pycaTripleDESBare() *detection.Rule {
+	return &detection.Rule{
+		ID:       "pyca-tripledes-bare",
+		Language: detection.LangPython,
+		Bundle:   "Pyca",
+		Pattern: regexp.MustCompile(
+			`\bTripleDES\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("3DES", model.PrimitiveBlockCipher, loc)
+			algo.AddFunction(model.FuncEncrypt)
+			algo.AddFunction(model.FuncDecrypt)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- Diffie-Hellman key exchange: KexGroup1 / KexGroup14 / KexGroup16 / KexGex class names ---
+// Paramiko defines DH kex via class attributes: name = "diffie-hellman-group1-sha1" etc.
+
+func pyDiffieHellmanKexClass() *detection.Rule {
+	return &detection.Rule{
+		ID:       "py-dh-kex-class",
+		Language: detection.LangPython,
+		Bundle:   "paramiko",
+		Pattern: regexp.MustCompile(
+			`name\s*=\s*["'](diffie-hellman-[^"']+)["']`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			algo := model.NewAlgorithm("DH", model.PrimitiveKeyAgreement, loc)
+			algo.AddFunction(model.FuncKeyGen)
+			cs := model.NewCipherSuite(match[1], loc)
+			return []model.INode{algo, cs}
+		},
+	}
+}
+
+// --- Diffie-Hellman via cryptography.hazmat: dh.generate_parameters / dh.DHParameterNumbers ---
+
+func pycaDHHazmat() *detection.Rule {
+	return &detection.Rule{
+		ID:       "pyca-dh-hazmat",
+		Language: detection.LangPython,
+		Bundle:   "Pyca",
+		Pattern: regexp.MustCompile(
+			`dh\s*\.\s*(generate_parameters|DHParameterNumbers|DHParameters|generate_private_key)\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("DH", model.PrimitiveKeyAgreement, loc)
+			algo.AddFunction(model.FuncKeyGen)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- stdlib hmac bare import: from hmac import HMAC; HMAC(key, msg, digest) ---
+// Different from pyca's hmac.HMAC — this is Python's built-in hmac module.
+
+func pyStdlibHMACBare() *detection.Rule {
+	return &detection.Rule{
+		ID:       "py-stdlib-hmac-bare",
+		Language: detection.LangPython,
+		Bundle:   "hmac",
+		Pattern: regexp.MustCompile(
+			`\bHMAC\s*\(\s*\w`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("HMAC", model.PrimitiveMAC, loc)
+			algo.AddFunction(model.FuncTag)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- os.urandom(n) — OS CSPRNG ---
+
+func pyOsUrandom() *detection.Rule {
+	return &detection.Rule{
+		ID:       "py-os-urandom",
+		Language: detection.LangPython,
+		Bundle:   "hashlib",
+		Pattern: regexp.MustCompile(
+			`os\s*\.\s*urandom\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("os.urandom", model.PrimitivePRNG, loc)
+			algo.AddFunction(model.FuncGenerate)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- Bare hashlib calls after from-import: md5(...), sha1(...), sha256(...) etc. ---
+// Catches: from hashlib import md5, sha256; md5(data).digest()
+
+func pyHashlibBareCall() *detection.Rule {
+	return &detection.Rule{
+		ID:       "py-hashlib-bare-call",
+		Language: detection.LangPython,
+		Bundle:   "hashlib",
+		Pattern: regexp.MustCompile(
+			`\b(md5|sha1|sha224|sha256|sha384|sha512|sha3_224|sha3_256|sha3_384|sha3_512|blake2b|blake2s)\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			name := strings.ToUpper(match[1])
+			name = strings.ReplaceAll(name, "_", "-")
+			algo := model.NewAlgorithm(name, model.PrimitiveHash, loc)
+			algo.AddFunction(model.FuncDigest)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- hashes.SHA1 / hashes.SHA256 as class references (no parens) ---
+// e.g. HASHES = {"ssh-rsa": hashes.SHA1, "rsa-sha2-256": hashes.SHA256}
+
+func pycaHashReference() *detection.Rule {
+	return &detection.Rule{
+		ID:       "pyca-hash-reference",
+		Language: detection.LangPython,
+		Bundle:   "Pyca",
+		Pattern: regexp.MustCompile(
+			`hashes\s*\.\s*(SHA1|SHA224|SHA256|SHA384|SHA512|SHA3_224|SHA3_256|SHA3_384|SHA3_512|MD5|BLAKE2b|BLAKE2s)\b[^(]`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			algo := model.NewAlgorithm(match[1], model.PrimitiveHash, loc)
+			algo.AddFunction(model.FuncDigest)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- nacl.signing.VerifyKey ---
+
+func pynaclVerifyKey() *detection.Rule {
+	return &detection.Rule{
+		ID:       "pynacl-verify-key",
+		Language: detection.LangPython,
+		Bundle:   "PyNaCl",
+		Pattern: regexp.MustCompile(
+			`nacl\s*\.\s*signing\s*\.\s*VerifyKey\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("Ed25519", model.PrimitiveSignature, loc)
+			algo.AddFunction(model.FuncVerify)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- ec.ECDSA(...) signing ---
+
+func pycaECDSASign() *detection.Rule {
+	return &detection.Rule{
+		ID:       "pyca-ecdsa-sign",
+		Language: detection.LangPython,
+		Bundle:   "Pyca",
+		Pattern: regexp.MustCompile(
+			`ec\s*\.\s*ECDSA\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("ECDSA", model.PrimitiveSignature, loc)
+			algo.AddFunction(model.FuncSign)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- X25519PublicKey.from_public_bytes(...) ---
+
+func pycaX25519PublicKey() *detection.Rule {
+	return &detection.Rule{
+		ID:       "pyca-x25519-pubkey",
+		Language: detection.LangPython,
+		Bundle:   "Pyca",
+		Pattern: regexp.MustCompile(
+			`X25519PublicKey\s*\.\s*from_public_bytes\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			key := model.NewKey("X25519", model.KindPublicKey, loc)
+			return []model.INode{key}
+		},
+	}
+}
+
+// --- padding.PKCS1v15() ---
+
+func pycaPKCS1v15() *detection.Rule {
+	return &detection.Rule{
+		ID:       "pyca-pkcs1v15",
+		Language: detection.LangPython,
+		Bundle:   "Pyca",
+		Pattern: regexp.MustCompile(
+			`padding\s*\.\s*PKCS1v15\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("PKCS1v15", model.PrimitiveUnknown, loc)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- padding.PKCS7(...) ---
+
+func pycaPKCS7() *detection.Rule {
+	return &detection.Rule{
+		ID:       "pyca-pkcs7",
+		Language: detection.LangPython,
+		Bundle:   "Pyca",
+		Pattern: regexp.MustCompile(
+			`padding\s*\.\s*PKCS7\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("PKCS7", model.PrimitiveUnknown, loc)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- EC named curves as standalone references: ec.SECP256R1(), ec.SECP384R1(), ec.SECP521R1() ---
+
+func pycaECCurveStandalone() *detection.Rule {
+	return &detection.Rule{
+		ID:       "pyca-ec-curve-standalone",
+		Language: detection.LangPython,
+		Bundle:   "Pyca",
+		Pattern: regexp.MustCompile(
+			`ec\s*\.\s*(SECP192R1|SECP224R1|SECP256R1|SECP384R1|SECP521R1|SECP256K1|BrainpoolP256R1|BrainpoolP384R1|BrainpoolP512R1|SECT163K1|SECT233K1|SECT283K1|SECT409K1|SECT571K1)\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			algo := model.NewAlgorithm(match[1], model.PrimitiveSignature, loc)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- modes.CBC / modes.CTR as class references (no parens) in dicts ---
+// e.g. _CIPHER_TABLE = {"AES-128-CBC": {"mode": modes.CBC, ...}}
+
+func pycaModeReference() *detection.Rule {
+	return &detection.Rule{
+		ID:       "pyca-mode-reference",
+		Language: detection.LangPython,
+		Bundle:   "Pyca",
+		Pattern: regexp.MustCompile(
+			`modes\s*\.\s*(CBC|CTR|OFB|CFB|GCM|ECB|XTS|CCM|SIV)\b[^(]`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			return []model.INode{model.NewMode(match[1])}
 		},
 	}
 }
