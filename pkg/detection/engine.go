@@ -138,22 +138,13 @@ func (e *Engine) ScanFile(filePath string, lang Language) ([]Finding, error) {
 	var findings []Finding
 	scanner := bufio.NewScanner(f)
 	lineNum := 0
-	inBlockComment := false
 
 	for scanner.Scan() {
 		lineNum++
-		raw := scanner.Text()
-
-		// Strip comments before running detection rules so that
-		// commented-out code never produces false-positive findings.
-		codeLine, newInBlock := stripComments(raw, lang, inBlockComment)
-		inBlockComment = newInBlock
-		if strings.TrimSpace(codeLine) == "" {
-			continue
-		}
+		line := scanner.Text()
 
 		for _, rule := range rules {
-			matches := rule.Pattern.FindStringSubmatch(codeLine)
+			matches := rule.Pattern.FindStringSubmatch(line)
 			if matches == nil {
 				continue
 			}
@@ -161,7 +152,7 @@ func (e *Engine) ScanFile(filePath string, lang Language) ([]Finding, error) {
 			loc := model.DetectionLocation{
 				FilePath:    filePath,
 				Line:        lineNum,
-				Column:      strings.Index(codeLine, matches[0]) + 1,
+				Column:      strings.Index(line, matches[0]) + 1,
 				Bundle:      rule.Bundle,
 				MatchedText: matches[0],
 			}
@@ -181,122 +172,6 @@ func (e *Engine) ScanFile(filePath string, lang Language) ([]Finding, error) {
 	}
 
 	return findings, nil
-}
-
-// stripComments removes the comment portion of a source line and returns the
-// remaining code text together with the updated block-comment state.
-//
-// It handles:
-//   - C-style line comments  (//)  used by Java, Go, JS/TS, C#, Dart, Rust, PHP
-//   - Hash line comments     (#)   used by Python, Ruby, PHP
-//   - C-style block comments (/* … */) tracked across lines
-//   - Python/Ruby full-line comments only (# at start of code portion)
-//
-// The function is conservative: when in doubt it keeps the code text so that
-// real detections are never silently dropped.
-func stripComments(line string, lang Language, inBlock bool) (code string, stillInBlock bool) {
-	// ── Block comment tracking (/* … */) ─────────────────────────────────────
-	// Languages that use C-style block comments.
-	usesCBlock := lang == LangJava || lang == LangGo || lang == LangJavaScript ||
-		lang == LangTypeScript || lang == LangCSharp || lang == LangDart ||
-		lang == LangRust || lang == LangPHP
-
-	if usesCBlock {
-		if inBlock {
-			// We are inside a /* … */ block — look for the closing */.
-			if idx := strings.Index(line, "*/"); idx >= 0 {
-				// Rest of the line after */ may contain code.
-				line = line[idx+2:]
-				inBlock = false
-			} else {
-				// Entire line is inside a block comment.
-				return "", true
-			}
-		}
-
-		// Scan through the remaining text handling /* and // in order.
-		result := strings.Builder{}
-		i := 0
-		for i < len(line) {
-			if i+1 < len(line) && line[i] == '/' && line[i+1] == '*' {
-				// Block comment opens — find closing */ on this line.
-				if end := strings.Index(line[i+2:], "*/"); end >= 0 {
-					// Block comment closes on the same line — skip it and continue.
-					i = i + 2 + end + 2
-					continue
-				}
-				// Block comment continues past this line.
-				inBlock = true
-				break
-			}
-			if i+1 < len(line) && line[i] == '/' && line[i+1] == '/' {
-				// Line comment — everything from here is a comment.
-				break
-			}
-			// Skip content inside string literals so // inside a string isn't
-			// treated as a comment. We handle single-quote and double-quote strings.
-			if line[i] == '"' || line[i] == '\'' {
-				quote := line[i]
-				result.WriteByte(line[i])
-				i++
-				for i < len(line) {
-					result.WriteByte(line[i])
-					if line[i] == '\\' && i+1 < len(line) {
-						// Escaped character — skip next byte.
-						i++
-						result.WriteByte(line[i])
-					} else if line[i] == quote {
-						break
-					}
-					i++
-				}
-				i++
-				continue
-			}
-			result.WriteByte(line[i])
-			i++
-		}
-		return result.String(), inBlock
-	}
-
-	// ── Hash-style line comments  (#) ────────────────────────────────────────
-	// Python and Ruby use # for line comments; no multi-line /* */ syntax.
-	if lang == LangPython || lang == LangRuby {
-		// Walk through the line respecting string literals so that a # inside
-		// a string (e.g. 'color: #fff') is not mistaken for a comment.
-		i := 0
-		result := strings.Builder{}
-		for i < len(line) {
-			ch := line[i]
-			if ch == '#' {
-				// Rest of line is a comment.
-				break
-			}
-			if ch == '"' || ch == '\'' {
-				quote := ch
-				result.WriteByte(ch)
-				i++
-				for i < len(line) {
-					result.WriteByte(line[i])
-					if line[i] == '\\' && i+1 < len(line) {
-						i++
-						result.WriteByte(line[i])
-					} else if line[i] == quote {
-						break
-					}
-					i++
-				}
-				i++
-				continue
-			}
-			result.WriteByte(ch)
-			i++
-		}
-		return result.String(), false
-	}
-
-	// For any other language just return the line unchanged.
-	return line, inBlock
 }
 
 func languageFromExt(path string) Language {

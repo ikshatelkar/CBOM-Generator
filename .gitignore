@@ -1,5 +1,7 @@
-test-repos/*
-testrepo/
+Test-repo/*
+Test repo/
 cbom.json
+cbom_hiddify.json
 results.sarif
 *.exe
+*.xlsx
