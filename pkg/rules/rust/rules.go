@@ -77,6 +77,8 @@ func allRustRules() []*detection.Rule {
 		rustJWTEncode(),
 		rustJWTDecode(),
 		rustJWTAlgorithm(),
+		// ── SQLCipher (database-level AES-256 encryption) ────────────────────
+		rustSQLCipherPragmaKey(),
 	}
 }
 
@@ -983,6 +985,28 @@ func rustJWTAlgorithmPrimitive(alg string) model.Primitive {
 		return model.PrimitiveMAC
 	default:
 		return model.PrimitiveUnknown
+	}
+}
+
+// ============================================================================
+// SQLCipher — database-level AES-256 encryption
+// ============================================================================
+
+// rustSQLCipherPragmaKey detects SQLCipher's PRAGMA key / PRAGMA rekey calls
+// embedded in Rust string literals (e.g. isar_core's sqlite3.rs).
+func rustSQLCipherPragmaKey() *detection.Rule {
+	return &detection.Rule{
+		ID:        "rust-sqlcipher-pragma-key",
+		Language:  detection.LangRust,
+		Bundle:    "RustSQLCipher",
+		Pattern:   regexp.MustCompile(`"PRAGMA\s+(?:re)?key\s*=`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("AES-256", model.PrimitiveBlockCipher, loc)
+			algo.AddFunction(model.FuncEncrypt)
+			algo.AddFunction(model.FuncDecrypt)
+			return []model.INode{algo}
+		},
 	}
 }
 

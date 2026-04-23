@@ -59,6 +59,9 @@ func allFlutterRules() []*detection.Rule {
 		// ── dart:io TLS ───────────────────────────────────────────────────────
 		dartTLSSecureSocket(),
 		dartTLSSecurityContext(),
+		// ── isar database encryption (SQLCipher / AES-256) ───────────────────
+		dartIsarEncryptionKey(),
+		dartIsarChangeEncryptionKey(),
 	}
 }
 
@@ -800,6 +803,45 @@ func dartJWTSign() *detection.Rule {
 			prim := classifyDartJWTPrimitive(name)
 			algo := model.NewAlgorithm(name, prim, loc)
 			algo.AddFunction(model.FuncSign)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// ============================================================================
+// isar database encryption (SQLCipher)
+// ============================================================================
+
+// dartIsarEncryptionKey detects Isar.open(encryptionKey: ...) and
+// Isar.openAsync(encryptionKey: ...) — signals SQLCipher AES-256 DB encryption.
+func dartIsarEncryptionKey() *detection.Rule {
+	return &detection.Rule{
+		ID:        "dart-isar-encryption-key",
+		Language:  detection.LangDart,
+		Bundle:    "DartIsar",
+		Pattern:   regexp.MustCompile(`\bencryptionKey\s*:`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("AES-256", model.PrimitiveBlockCipher, loc)
+			algo.AddFunction(model.FuncEncrypt)
+			algo.AddFunction(model.FuncDecrypt)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// dartIsarChangeEncryptionKey detects isar.changeEncryptionKey(...) — SQLCipher key rotation.
+func dartIsarChangeEncryptionKey() *detection.Rule {
+	return &detection.Rule{
+		ID:        "dart-isar-change-encryption-key",
+		Language:  detection.LangDart,
+		Bundle:    "DartIsar",
+		Pattern:   regexp.MustCompile(`\.changeEncryptionKey\s*\(`),
+		MatchType: detection.MatchMethodCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("AES-256", model.PrimitiveBlockCipher, loc)
+			algo.AddFunction(model.FuncEncrypt)
+			algo.AddFunction(model.FuncDecrypt)
 			return []model.INode{algo}
 		},
 	}
