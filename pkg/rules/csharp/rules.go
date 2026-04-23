@@ -69,6 +69,26 @@ func allCSharpRules() []*detection.Rule {
 		csBCSigner(),
 		csBCKeyPairGenerator(),
 		csBCPBEGenerator(),
+		// ── Post-quantum (.NET 9+) ─────────────────────────────────────────────
+		csMLDsa(),
+		csSlhDsa(),
+		csCompositeMLDsa(),
+		// ── AEAD ciphers (AesCcm, ChaCha20Poly1305) ───────────────────────────
+		csAesCcm(),
+		csChaCha20Poly1305(),
+		// ── ASP.NET Core KeyDerivation API ────────────────────────────────────
+		csKeyDerivationPbkdf2(),
+		csKeyDerivationPrf(),
+		// ── DataProtection algorithm enums ────────────────────────────────────
+		csEncryptionAlgorithmEnum(),
+		csValidationAlgorithmEnum(),
+		// ── JWT: JsonWebTokenHandler ──────────────────────────────────────────
+		csJsonWebTokenHandler(),
+		// ── SymmetricAlgorithm: CreateEncryptor / CreateDecryptor ─────────────
+		csCreateEncryptor(),
+		csCreateDecryptor(),
+		// ── X.509 certificates ────────────────────────────────────────────────
+		csX509Certificate2(),
 	}
 }
 
@@ -700,6 +720,268 @@ func csSHA3Create() *detection.Rule {
 			algo := model.NewAlgorithm(name, model.PrimitiveHash, loc)
 			algo.AddFunction(model.FuncDigest)
 			return []model.INode{algo}
+		},
+	}
+}
+
+// ============================================================================
+// Post-quantum algorithms (.NET 9+)
+// ============================================================================
+
+// csMLDsa detects ML-DSA (FIPS 204) key operations: MLDsa.Create(), MLDsa.ImportFromPem(), etc.
+func csMLDsa() *detection.Rule {
+	return &detection.Rule{
+		ID:        "cs-mldsa",
+		Language:  detection.LangCSharp,
+		Bundle:    "DotNetPostQuantum",
+		Pattern:   regexp.MustCompile(`\bMLDsa\s*\.\s*(Create|ImportFromPem|ImportFromEncryptedPem|GenerateKey)\s*\(`),
+		MatchType: detection.MatchMethodCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("ML-DSA", model.PrimitiveSignature, loc)
+			algo.AddFunction(model.FuncKeyGen)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// csSlhDsa detects SLH-DSA (FIPS 205) key operations: SlhDsa.Create(), SlhDsa.ImportFromPem(), etc.
+func csSlhDsa() *detection.Rule {
+	return &detection.Rule{
+		ID:        "cs-slhdsa",
+		Language:  detection.LangCSharp,
+		Bundle:    "DotNetPostQuantum",
+		Pattern:   regexp.MustCompile(`\bSlhDsa\s*\.\s*(Create|ImportFromPem|ImportFromEncryptedPem|GenerateKey)\s*\(`),
+		MatchType: detection.MatchMethodCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("SLH-DSA", model.PrimitiveSignature, loc)
+			algo.AddFunction(model.FuncKeyGen)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// csCompositeMLDsa detects Composite ML-DSA (hybrid PQ + classical): CompositeMLDsa.ImportFromPem(), etc.
+func csCompositeMLDsa() *detection.Rule {
+	return &detection.Rule{
+		ID:        "cs-composite-mldsa",
+		Language:  detection.LangCSharp,
+		Bundle:    "DotNetPostQuantum",
+		Pattern:   regexp.MustCompile(`\bCompositeMLDsa\s*\.\s*(Create|ImportFromPem|ImportFromEncryptedPem|GenerateKey)\s*\(`),
+		MatchType: detection.MatchMethodCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("Composite-ML-DSA", model.PrimitiveSignature, loc)
+			algo.AddFunction(model.FuncKeyGen)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// ============================================================================
+// AEAD ciphers: AesCcm, ChaCha20Poly1305
+// ============================================================================
+
+// csAesCcm detects new AesCcm(key) — AES in Counter with CBC-MAC mode (.NET Core 3+).
+func csAesCcm() *detection.Rule {
+	return &detection.Rule{
+		ID:        "cs-aesccm-new",
+		Language:  detection.LangCSharp,
+		Bundle:    "DotNetCrypto",
+		Pattern:   regexp.MustCompile(`new\s+AesCcm\s*\(`),
+		MatchType: detection.MatchConstructor,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("AES-CCM", model.PrimitiveAEAD, loc)
+			algo.AddFunction(model.FuncEncrypt)
+			algo.AddFunction(model.FuncDecrypt)
+			algo.Put(model.NewMode("CCM"))
+			return []model.INode{algo}
+		},
+	}
+}
+
+// csChaCha20Poly1305 detects new ChaCha20Poly1305(key) — modern AEAD cipher (.NET 6+).
+func csChaCha20Poly1305() *detection.Rule {
+	return &detection.Rule{
+		ID:        "cs-chacha20poly1305-new",
+		Language:  detection.LangCSharp,
+		Bundle:    "DotNetCrypto",
+		Pattern:   regexp.MustCompile(`new\s+ChaCha20Poly1305\s*\(`),
+		MatchType: detection.MatchConstructor,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("ChaCha20-Poly1305", model.PrimitiveAEAD, loc)
+			algo.AddFunction(model.FuncEncrypt)
+			algo.AddFunction(model.FuncDecrypt)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// ============================================================================
+// ASP.NET Core KeyDerivation API (Microsoft.AspNetCore.Cryptography.KeyDerivation)
+// ============================================================================
+
+// csKeyDerivationPbkdf2 detects KeyDerivation.Pbkdf2(password, salt, prf, iterCount, numBytes).
+func csKeyDerivationPbkdf2() *detection.Rule {
+	return &detection.Rule{
+		ID:        "cs-keyderivation-pbkdf2",
+		Language:  detection.LangCSharp,
+		Bundle:    "DotNetCrypto",
+		Pattern:   regexp.MustCompile(`KeyDerivation\s*\.\s*Pbkdf2\s*\(`),
+		MatchType: detection.MatchMethodCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("PBKDF2", model.PrimitivePasswordHash, loc)
+			algo.AddFunction(model.FuncKeyDerive)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// csKeyDerivationPrf detects KeyDerivationPrf.HMACSHA1, KeyDerivationPrf.HMACSHA256, etc.
+// HMACSHA1 is particularly important as it signals a vulnerable (legacy) PBKDF2 configuration.
+func csKeyDerivationPrf() *detection.Rule {
+	return &detection.Rule{
+		ID:        "cs-keyderivation-prf",
+		Language:  detection.LangCSharp,
+		Bundle:    "DotNetCrypto",
+		Pattern:   regexp.MustCompile(`KeyDerivationPrf\s*\.\s*(HMACSHA1|HMACSHA256|HMACSHA512)\b`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			hashName := strings.TrimPrefix(match[1], "HMAC")
+			name := "PBKDF2-HMAC-" + hashName
+			algo := model.NewAlgorithm(name, model.PrimitivePasswordHash, loc)
+			algo.AddFunction(model.FuncKeyDerive)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// ============================================================================
+// DataProtection algorithm enums
+// ============================================================================
+
+// csEncryptionAlgorithmEnum detects EncryptionAlgorithm.AES_256_CBC, AES_256_GCM, etc.
+func csEncryptionAlgorithmEnum() *detection.Rule {
+	return &detection.Rule{
+		ID:        "cs-dp-encryption-algo",
+		Language:  detection.LangCSharp,
+		Bundle:    "DotNetDataProtection",
+		Pattern:   regexp.MustCompile(`EncryptionAlgorithm\s*\.\s*(AES_(\d+)_(CBC|GCM))\b`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 4 {
+				return nil
+			}
+			keyBits, _ := strconv.Atoi(match[2])
+			mode := match[3]
+			prim := model.PrimitiveBlockCipher
+			if mode == "GCM" {
+				prim = model.PrimitiveAEAD
+			}
+			algo := model.NewAlgorithm("AES", prim, loc)
+			algo.AddFunction(model.FuncEncrypt)
+			algo.AddFunction(model.FuncDecrypt)
+			if keyBits > 0 {
+				algo.Put(model.NewKeyLength(keyBits))
+			}
+			algo.Put(model.NewMode(mode))
+			return []model.INode{algo}
+		},
+	}
+}
+
+// csValidationAlgorithmEnum detects ValidationAlgorithm.HMACSHA256, ValidationAlgorithm.HMACSHA512.
+func csValidationAlgorithmEnum() *detection.Rule {
+	return &detection.Rule{
+		ID:        "cs-dp-validation-algo",
+		Language:  detection.LangCSharp,
+		Bundle:    "DotNetDataProtection",
+		Pattern:   regexp.MustCompile(`ValidationAlgorithm\s*\.\s*(HMACSHA256|HMACSHA512)\b`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			hashName := strings.TrimPrefix(match[1], "HMAC")
+			algo := model.NewAlgorithm("HMAC-"+hashName, model.PrimitiveMAC, loc)
+			algo.AddFunction(model.FuncTag)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// ============================================================================
+// JWT: JsonWebTokenHandler (modern replacement for JwtSecurityTokenHandler)
+// ============================================================================
+
+// csJsonWebTokenHandler detects new JsonWebTokenHandler() — ASP.NET Core 8+ JWT processing.
+func csJsonWebTokenHandler() *detection.Rule {
+	return &detection.Rule{
+		ID:        "cs-json-web-token-handler",
+		Language:  detection.LangCSharp,
+		Bundle:    "DotNetJWT",
+		Pattern:   regexp.MustCompile(`new\s+JsonWebTokenHandler\s*\(`),
+		MatchType: detection.MatchConstructor,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("JWT", model.PrimitiveSignature, loc)
+			algo.AddFunction(model.FuncSign)
+			algo.AddFunction(model.FuncVerify)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// ============================================================================
+// SymmetricAlgorithm: CreateEncryptor / CreateDecryptor
+// ============================================================================
+
+// csCreateEncryptor detects .CreateEncryptor() on any symmetric algorithm object.
+func csCreateEncryptor() *detection.Rule {
+	return &detection.Rule{
+		ID:        "cs-create-encryptor",
+		Language:  detection.LangCSharp,
+		Bundle:    "DotNetCrypto",
+		Pattern:   regexp.MustCompile(`\.CreateEncryptor\s*\(`),
+		MatchType: detection.MatchMethodCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("SymmetricEncryptor", model.PrimitiveBlockCipher, loc)
+			algo.AddFunction(model.FuncEncrypt)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// csCreateDecryptor detects .CreateDecryptor() on any symmetric algorithm object.
+func csCreateDecryptor() *detection.Rule {
+	return &detection.Rule{
+		ID:        "cs-create-decryptor",
+		Language:  detection.LangCSharp,
+		Bundle:    "DotNetCrypto",
+		Pattern:   regexp.MustCompile(`\.CreateDecryptor\s*\(`),
+		MatchType: detection.MatchMethodCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("SymmetricDecryptor", model.PrimitiveBlockCipher, loc)
+			algo.AddFunction(model.FuncDecrypt)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// ============================================================================
+// X.509 certificates
+// ============================================================================
+
+// csX509Certificate2 detects new X509Certificate2(path, password, ...) — TLS certificate loading.
+func csX509Certificate2() *detection.Rule {
+	return &detection.Rule{
+		ID:        "cs-x509certificate2",
+		Language:  detection.LangCSharp,
+		Bundle:    "DotNetTLS",
+		Pattern:   regexp.MustCompile(`new\s+X509Certificate2\s*\(`),
+		MatchType: detection.MatchConstructor,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			return []model.INode{model.NewProtocol("X.509", loc)}
 		},
 	}
 }
