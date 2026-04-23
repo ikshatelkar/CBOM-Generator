@@ -63,6 +63,16 @@ func allRustRules() []*detection.Rule {
 		// ── rustls ───────────────────────────────────────────────────────────
 		rustTLSClientConfig(),
 		rustTLSServerConfig(),
+		rustTLSClientConfigWithProvider(),
+		rustTLSServerConfigWithProvider(),
+		// ── rustls: TLS cipher suite constants ───────────────────────────────
+		rustTLSCipherSuite(),
+		// ── rustls: signature scheme constants ───────────────────────────────
+		rustSignatureScheme(),
+		// ── rustls / ring: SM4 cipher ─────────────────────────────────────────
+		rustSM4(),
+		// ── HKDF (hkdf crate) ────────────────────────────────────────────────
+		rustHKDF(),
 		// ── jsonwebtoken ─────────────────────────────────────────────────────
 		rustJWTEncode(),
 		rustJWTDecode(),
@@ -658,6 +668,141 @@ func rustTLSServerConfig() *detection.Rule {
 }
 
 // ============================================================================
+// rustls: builder_with_provider variants
+// ============================================================================
+
+// rustTLSClientConfigWithProvider detects ClientConfig::builder_with_provider(provider).
+func rustTLSClientConfigWithProvider() *detection.Rule {
+	return &detection.Rule{
+		ID:        "rust-rustls-client-with-provider",
+		Language:  detection.LangRust,
+		Bundle:    "Rustls",
+		Pattern:   regexp.MustCompile(`ClientConfig\s*::\s*builder_with_provider\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			return []model.INode{model.NewProtocol("TLS", loc)}
+		},
+	}
+}
+
+// rustTLSServerConfigWithProvider detects ServerConfig::builder_with_provider(provider).
+func rustTLSServerConfigWithProvider() *detection.Rule {
+	return &detection.Rule{
+		ID:        "rust-rustls-server-with-provider",
+		Language:  detection.LangRust,
+		Bundle:    "Rustls",
+		Pattern:   regexp.MustCompile(`ServerConfig\s*::\s*builder_with_provider\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			return []model.INode{model.NewProtocol("TLS", loc)}
+		},
+	}
+}
+
+// ============================================================================
+// rustls: TLS cipher suite constants
+// Detects: CipherSuite::TLS_AES_256_GCM_SHA384, CipherSuite::TLS_CHACHA20_POLY1305_SHA256,
+//          CipherSuite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256, etc.
+// ============================================================================
+
+func rustTLSCipherSuite() *detection.Rule {
+	return &detection.Rule{
+		ID:        "rust-rustls-ciphersuite",
+		Language:  detection.LangRust,
+		Bundle:    "Rustls",
+		Pattern:   regexp.MustCompile(`CipherSuite\s*::\s*(TLS_\w+)\b`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			name, prim := normalizeRustlsCipherSuite(match[1])
+			suite := model.NewCipherSuite(name, loc)
+			_ = prim
+			return []model.INode{suite}
+		},
+	}
+}
+
+// ============================================================================
+// rustls: SignatureScheme constants
+// Detects: SignatureScheme::ECDSA_NISTP256_SHA256, SignatureScheme::RSA_PSS_SHA256,
+//          SignatureScheme::ED25519, etc.
+// ============================================================================
+
+func rustSignatureScheme() *detection.Rule {
+	return &detection.Rule{
+		ID:        "rust-rustls-sigscheme",
+		Language:  detection.LangRust,
+		Bundle:    "Rustls",
+		Pattern:   regexp.MustCompile(`SignatureScheme\s*::\s*(ECDSA_\w+|RSA_\w+|ED25519|ED448)\b`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			name, prim := normalizeRustSignatureScheme(match[1])
+			algo := model.NewAlgorithm(name, prim, loc)
+			algo.AddFunction(model.FuncSign)
+			algo.AddFunction(model.FuncVerify)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// ============================================================================
+// SM4 cipher (Chinese national standard — rustls ConnectionTrafficSecrets)
+// Detects: ConnectionTrafficSecrets::Sm4Gcm, ConnectionTrafficSecrets::Sm4Ccm,
+//          Sm4::new(), sm4 crate usage.
+// ============================================================================
+
+func rustSM4() *detection.Rule {
+	return &detection.Rule{
+		ID:        "rust-sm4",
+		Language:  detection.LangRust,
+		Bundle:    "RustCrypto",
+		Pattern:   regexp.MustCompile(`\b(?:Sm4(?:Gcm|Ccm)?|SM4)\s*(?:::\s*new\s*\(|[{])`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			prim := model.PrimitiveAEAD
+			mode := "GCM"
+			if strings.Contains(match[0], "Ccm") || strings.Contains(match[0], "CCM") {
+				mode = "CCM"
+			}
+			algo := model.NewAlgorithm("SM4", prim, loc)
+			algo.AddFunction(model.FuncEncrypt)
+			algo.AddFunction(model.FuncDecrypt)
+			algo.Put(model.NewMode(mode))
+			return []model.INode{algo}
+		},
+	}
+}
+
+// ============================================================================
+// HKDF (hkdf crate)
+// Detects: Hkdf::<Sha256>::new(salt, ikm), hkdf::Hkdf::<Sha512>::new(...)
+// ============================================================================
+
+func rustHKDF() *detection.Rule {
+	return &detection.Rule{
+		ID:        "rust-hkdf",
+		Language:  detection.LangRust,
+		Bundle:    "RustCrypto",
+		Pattern:   regexp.MustCompile(`\b(?:hkdf\s*::\s*)?Hkdf\s*::\s*<\s*(\w+)\s*>\s*::\s*(?:new|extract)\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			hash := "SHA-256"
+			if len(match) >= 2 {
+				hash = normalizeRustHashName(match[1])
+			}
+			algo := model.NewAlgorithm("HKDF-"+hash, model.PrimitiveKeyDerivation, loc)
+			algo.AddFunction(model.FuncKeyDerive)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// ============================================================================
 // jsonwebtoken crate
 // ============================================================================
 
@@ -838,6 +983,58 @@ func rustJWTAlgorithmPrimitive(alg string) model.Primitive {
 		return model.PrimitiveMAC
 	default:
 		return model.PrimitiveUnknown
+	}
+}
+
+// normalizeRustlsCipherSuite maps a TLS CipherSuite constant name to a display name and primitive.
+func normalizeRustlsCipherSuite(name string) (string, model.Primitive) {
+	upper := strings.ToUpper(name)
+	switch {
+	case strings.Contains(upper, "AES_128_GCM"):
+		return "TLS_AES_128_GCM", model.PrimitiveAEAD
+	case strings.Contains(upper, "AES_256_GCM"):
+		return "TLS_AES_256_GCM", model.PrimitiveAEAD
+	case strings.Contains(upper, "CHACHA20_POLY1305"):
+		return "TLS_CHACHA20_POLY1305", model.PrimitiveAEAD
+	case strings.Contains(upper, "AES_128_CCM"):
+		return "TLS_AES_128_CCM", model.PrimitiveAEAD
+	case strings.Contains(upper, "SM4_GCM"):
+		return "TLS_SM4_GCM", model.PrimitiveAEAD
+	case strings.Contains(upper, "SM4_CCM"):
+		return "TLS_SM4_CCM", model.PrimitiveAEAD
+	default:
+		return name, model.PrimitiveUnknown
+	}
+}
+
+// normalizeRustSignatureScheme maps a SignatureScheme constant to a display name and primitive.
+func normalizeRustSignatureScheme(name string) (string, model.Primitive) {
+	upper := strings.ToUpper(name)
+	switch {
+	case upper == "ED25519":
+		return "Ed25519", model.PrimitiveSignature
+	case upper == "ED448":
+		return "Ed448", model.PrimitiveSignature
+	case strings.Contains(upper, "ECDSA_NISTP256"):
+		return "ECDSA-P256", model.PrimitiveSignature
+	case strings.Contains(upper, "ECDSA_NISTP384"):
+		return "ECDSA-P384", model.PrimitiveSignature
+	case strings.Contains(upper, "ECDSA_NISTP521"):
+		return "ECDSA-P521", model.PrimitiveSignature
+	case strings.Contains(upper, "RSA_PSS_SHA256"):
+		return "RSA-PSS-SHA256", model.PrimitiveSignature
+	case strings.Contains(upper, "RSA_PSS_SHA384"):
+		return "RSA-PSS-SHA384", model.PrimitiveSignature
+	case strings.Contains(upper, "RSA_PSS_SHA512"):
+		return "RSA-PSS-SHA512", model.PrimitiveSignature
+	case strings.Contains(upper, "RSA_PKCS1_SHA256"):
+		return "RSA-PKCS1-SHA256", model.PrimitiveSignature
+	case strings.Contains(upper, "RSA_PKCS1_SHA384"):
+		return "RSA-PKCS1-SHA384", model.PrimitiveSignature
+	case strings.Contains(upper, "RSA_PKCS1_SHA512"):
+		return "RSA-PKCS1-SHA512", model.PrimitiveSignature
+	default:
+		return name, model.PrimitiveSignature
 	}
 }
 
