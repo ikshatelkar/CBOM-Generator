@@ -137,6 +137,10 @@ func (e *Engine) ScanFile(filePath string, lang Language) ([]Finding, error) {
 
 	var findings []Finding
 	scanner := bufio.NewScanner(f)
+	// Default scanner buffer is 64 KB — too small for minified JS or generated
+	// source files with long lines. Increase to 1 MB to avoid silently dropping lines.
+	buf := make([]byte, 1024*1024)
+	scanner.Buffer(buf, 1024*1024)
 	lineNum := 0
 
 	for scanner.Scan() {

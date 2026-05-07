@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/cbom-scanner/pkg/detection"
 	"github.com/cbom-scanner/pkg/model"
@@ -55,6 +56,8 @@ func allJSRules(lang detection.Language) []*detection.Rule {
 		jwtSign(lang),
 		jwtVerify(lang),
 		jwtNoneAlgorithm(lang),
+		// ── Insecure PRNG ─────────────────────────────────────────────────
+		jsMathRandom(lang),
 		// ── TLS server cipher strings ──────────────────────────────────────
 		nodeTLSCiphers(lang),
 		// ── jose (npm) ────────────────────────────────────────────────────────
@@ -620,7 +623,12 @@ func argon2Hash(lang detection.Language) *detection.Rule {
 			name := "Argon2"
 			variantMatch := regexp.MustCompile(`argon2\s*\.\s*(argon2id|argon2i|argon2d)`).FindStringSubmatch(match[0])
 			if len(variantMatch) >= 2 {
-				name = strings.Title(variantMatch[1]) //nolint:staticcheck
+				// strings.Title is deprecated (Go 1.18+); use unicode-safe capitalisation.
+				r := []rune(variantMatch[1])
+				if len(r) > 0 {
+					r[0] = unicode.ToUpper(r[0])
+					name = string(r)
+				}
 			}
 			algo := model.NewAlgorithm(name, model.PrimitivePasswordHash, loc)
 			algo.AddFunction(model.FuncKeyDerive)
@@ -886,18 +894,23 @@ func classifyWebCryptoAlgo(name string) (string, model.Primitive) {
 		return name, model.PrimitiveAEAD
 	case strings.Contains(upper, "AES"):
 		return name, model.PrimitiveBlockCipher
-	case strings.Contains(upper, "RSA-OAEP"), strings.Contains(upper, "RSA-PSS"),
-		strings.Contains(upper, "RSASSA"):
+	// Bug fix: RSA-OAEP is encryption, not a signature scheme.
+	case strings.Contains(upper, "RSA-OAEP"):
+		return name, model.PrimitivePublicKeyEncryption
+	case strings.Contains(upper, "RSA-PSS"), strings.Contains(upper, "RSASSA"):
 		return name, model.PrimitiveSignature
-	case strings.Contains(upper, "ECDSA"), strings.Contains(upper, "ECDH"):
+	case strings.Contains(upper, "ECDSA"):
 		return name, model.PrimitiveSignature
+	// Bug fix: ECDH is key agreement, not signature.
+	case strings.Contains(upper, "ECDH"):
+		return name, model.PrimitiveKeyAgreement
 	case strings.Contains(upper, "HMAC"):
 		return name, model.PrimitiveMAC
 	case strings.Contains(upper, "PBKDF2"):
 		return name, model.PrimitivePasswordHash
 	case strings.Contains(upper, "HKDF"):
 		return name, model.PrimitiveKeyDerivation
-	case strings.Contains(upper, "ED25519"):
+	case strings.Contains(upper, "ED25519"), strings.Contains(upper, "ED448"):
 		return name, model.PrimitiveSignature
 	default:
 		return name, model.PrimitiveUnknown
@@ -923,8 +936,11 @@ func classifyJSAsymmetricPrimitive(name string) model.Primitive {
 func classifyCryptoJSPrimitive(name string) model.Primitive {
 	upper := strings.ToUpper(name)
 	switch {
-	case upper == "AES", upper == "DES", upper == "TRIPLEDES", upper == "RC4",
-		upper == "RABBIT", upper == "RC2", upper == "BLOWFISH":
+	// Bug fix: RC4 and Rabbit are stream ciphers, not block ciphers.
+	case upper == "RC4", upper == "RABBIT":
+		return model.PrimitiveStreamCipher
+	case upper == "AES", upper == "DES", upper == "TRIPLEDES",
+		upper == "RC2", upper == "BLOWFISH":
 		return model.PrimitiveBlockCipher
 	case upper == "SHA1", upper == "SHA256", upper == "SHA512", upper == "SHA3",
 		upper == "MD5", upper == "RIPEMD160":
@@ -979,6 +995,28 @@ func jwtNoneAlgorithm(lang detection.Language) *detection.Rule {
 		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
 			algo := model.NewAlgorithm("none", model.PrimitiveMAC, loc)
 			algo.AddFunction(model.FuncSign)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// ============================================================================
+// Insecure PRNG — Math.random()
+// ============================================================================
+
+// jsMathRandom detects Math.random(), which is NOT cryptographically secure.
+// It must not be used to generate tokens, nonces, passwords, or any value
+// that requires unpredictability.
+func jsMathRandom(lang detection.Language) *detection.Rule {
+	return &detection.Rule{
+		ID:        "js-math-random",
+		Language:  lang,
+		Bundle:    "JSInsecure",
+		Pattern:   regexp.MustCompile(`\bMath\s*\.\s*random\s*\(\s*\)`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("Math.random", model.PrimitivePRNG, loc)
+			algo.AddFunction(model.FuncGenerate)
 			return []model.INode{algo}
 		},
 	}

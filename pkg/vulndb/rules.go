@@ -207,7 +207,7 @@ func RegisterAllRules(registry *VulnRuleRegistry) {
 		Category:    "cipher",
 		Title:       "RC2 — Weak Symmetric Cipher",
 		Description: "RC2 is an export-grade cipher historically deployed with 40-bit keys. It is not approved by NIST for any security use.",
-		Severity:    "high",
+		Severity:    "critical",
 		References:  []string{"NIST SP 800-131A Rev 2"},
 		Recommendation: "Replace with AES-256-GCM.",
 		Match: func(node model.INode) bool {
@@ -877,6 +877,55 @@ func RegisterAllRules(registry *VulnRuleRegistry) {
 		},
 	})
 
+	// -------------------------------------------------------------------------
+	// CBOM-RNG-002: Non-Cryptographic PRNG — all languages
+	// -------------------------------------------------------------------------
+	registry.Register(&VulnRule{
+		ID:       "CBOM-RNG-002",
+		Category: "rng",
+		Title:    "Non-Cryptographic PRNG — Insecure for Security Use",
+		Description: "The detected function or class produces pseudo-random output that is NOT " +
+			"cryptographically secure. Its output is deterministic and predictable given the seed. " +
+			"Using these generators for session tokens, nonces, passwords, keys, or any " +
+			"security-sensitive value is a high-severity vulnerability because an attacker who " +
+			"knows or guesses the seed can predict all generated values. " +
+			"Affected: Go math/rand, JS Math.random(), Java java.util.Random / ThreadLocalRandom, " +
+			"Rust rand::thread_rng(), Dart Random(), Ruby Kernel#rand / Random, " +
+			"Python random module, PHP rand()/mt_rand(), C# System.Random.",
+		Severity:   "high",
+		References: []string{"CWE-338", "NIST SP 800-90A Rev 1", "OWASP WSTG-CRYP-02"},
+		Recommendation: "Replace with a cryptographically secure RNG for your language: " +
+			"Go: crypto/rand — JS: crypto.randomBytes() or crypto.getRandomValues() — " +
+			"Java: SecureRandom — Rust: ring::SystemRandom or OsRng — " +
+			"Dart: Random.secure() — Ruby: SecureRandom — " +
+			"Python: secrets or os.urandom() — PHP: random_bytes()/random_int() — " +
+			"C#: RandomNumberGenerator.",
+		Match: func(node model.INode) bool {
+			a, ok := node.(*model.Algorithm)
+			if !ok || a.PrimitiveType != model.PrimitivePRNG {
+				return false
+			}
+			name := strings.ToLower(a.Name)
+			insecureNames := []string{
+				"math/rand",         // Go
+				"math.random",       // JavaScript
+				"java.util.random",  // Java
+				"threadlocalrandom", // Java
+				"rand",              // Rust rand crate
+				"dart:math random",  // Dart
+				"kernel#rand",       // Ruby
+				"random.random",     // Python stdlib random module
+				"system.random",     // C#
+			}
+			for _, n := range insecureNames {
+				if name == n {
+					return true
+				}
+			}
+			return false
+		},
+	})
+
 	// ==========================================================================
 	// CWE-1240: USE OF A CRYPTOGRAPHIC PRIMITIVE WITH A RISKY IMPLEMENTATION
 	// Covers null ciphers, weak PBE schemes, and hardcoded IVs.
@@ -1204,9 +1253,9 @@ func RegisterAllRules(registry *VulnRuleRegistry) {
 	// INSECURE RANDOM NUMBER GENERATORS (additional)
 	// ==========================================================================
 
-	// CBOM-RNG-003: passlib weak password hash schemes (MD5-crypt, SHA1-crypt, DES-crypt)
+	// CBOM-KDF-003: passlib weak password hash schemes (MD5-crypt, SHA1-crypt, DES-crypt)
 	registry.Register(&VulnRule{
-		ID:       "CBOM-RNG-003",
+		ID:       "CBOM-KDF-003",
 		Category: "kdf",
 		Title:    "passlib Weak Password Hash Scheme — MD5/SHA1/DES-crypt",
 		Description: "The passlib schemes md5_crypt, sha1_crypt, des_crypt, and apr_md5_crypt " +

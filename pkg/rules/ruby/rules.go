@@ -31,17 +31,24 @@ func allRubyRules() []*detection.Rule {
 		rubyOpenSSLDigestClass(),
 		// ── OpenSSL::HMAC ─────────────────────────────────────────────────────
 		rubyOpenSSLHMAC(),
-		// ── OpenSSL::PKey ─────────────────────────────────────────────────────
+		// ── OpenSSL::PKey — constructors ──────────────────────────────────────
 		rubyOpenSSLPKeyRSA(),
 		rubyOpenSSLPKeyEC(),
 		rubyOpenSSLPKeyDSA(),
 		rubyOpenSSLPKeyDH(),
+		// ── OpenSSL::PKey — generic API (v3+) ────────────────────────────────
+		rubyOpenSSLPKeyGenerate(),
+		rubyOpenSSLPKeySign(),
+		rubyOpenSSLPKeyVerify(),
+		rubyOpenSSLPKeyDerive(),
 		// ── OpenSSL::SSL ──────────────────────────────────────────────────────
 		rubyOpenSSLSSLContext(),
 		rubyOpenSSLSSLSocket(),
 		rubyOpenSSLSSLCiphers(),
-		// ── OpenSSL::PKCS5 ────────────────────────────────────────────────────
+		rubyOpenSSLSSLVersion(),
+		// ── OpenSSL::PKCS5 / OpenSSL::KDF ────────────────────────────────────
 		rubyOpenSSLPKCS5PBKDF2(),
+		rubyOpenSSLKDF(),
 		// ── OpenSSL::Random ───────────────────────────────────────────────────
 		rubyOpenSSLRandom(),
 		// ── Digest stdlib ────────────────────────────────────────────────────
@@ -49,11 +56,17 @@ func allRubyRules() []*detection.Rule {
 		rubyDigestHexdigest(),
 		// ── BCrypt gem ───────────────────────────────────────────────────────
 		rubyBcryptPasswordCreate(),
+		rubyBcryptPasswordNew(),
+		rubyBcryptEngineHash(),
 		// ── jwt gem ──────────────────────────────────────────────────────────
 		rubyJWTEncode(),
 		rubyJWTDecode(),
 		// ── SecureRandom stdlib ───────────────────────────────────────────────
 		rubySecureRandom(),
+		// ── Insecure PRNG (Kernel#rand / Random) ─────────────────────────────
+		rubyInsecureRandom(),
+		// ── Argon2 gem ────────────────────────────────────────────────────────
+		rubyArgon2(),
 	}
 }
 
@@ -78,13 +91,13 @@ func rubyOpenSSLCipherNew() *detection.Rule {
 	}
 }
 
-// rubyOpenSSLCipherAES detects OpenSSL::Cipher::AES.new(256, :CBC) and OpenSSL::Cipher::AES256.new(:CBC).
+// rubyOpenSSLCipherAES detects OpenSSL::Cipher::<Name>.new(...) for all named cipher subclasses.
 func rubyOpenSSLCipherAES() *detection.Rule {
 	return &detection.Rule{
 		ID:        "ruby-openssl-cipher-aes",
 		Language:  detection.LangRuby,
 		Bundle:    "RubyOpenSSL",
-		Pattern:   regexp.MustCompile(`OpenSSL\s*::\s*Cipher\s*::\s*(AES|DES|RC4|Blowfish|Camellia|CAST5|IDEA|AES128|AES192|AES256)\s*(?:\.\s*new)?\s*\(`),
+		Pattern:   regexp.MustCompile(`OpenSSL\s*::\s*Cipher\s*::\s*(AES|DES|RC4|RC2|RC5|Blowfish|Camellia|CAST5|IDEA|AES128|AES192|AES256)\s*(?:\.\s*new)?\s*\(`),
 		MatchType: detection.MatchConstructor,
 		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
 			if len(match) < 2 {
@@ -149,13 +162,13 @@ func rubyOpenSSLDigestClass() *detection.Rule {
 // OpenSSL::HMAC
 // ============================================================================
 
-// rubyOpenSSLHMAC detects OpenSSL::HMAC.digest(OpenSSL::Digest.new('SHA256'), key, data).
+// rubyOpenSSLHMAC detects OpenSSL::HMAC.digest / hexdigest / base64digest / new.
 func rubyOpenSSLHMAC() *detection.Rule {
 	return &detection.Rule{
 		ID:        "ruby-openssl-hmac",
 		Language:  detection.LangRuby,
 		Bundle:    "RubyOpenSSL",
-		Pattern:   regexp.MustCompile(`OpenSSL\s*::\s*HMAC\s*\.\s*(?:digest|hexdigest|new)\s*\(`),
+		Pattern:   regexp.MustCompile(`OpenSSL\s*::\s*HMAC\s*\.\s*(?:digest|hexdigest|base64digest|new)\s*\(`),
 		MatchType: detection.MatchMethodCall,
 		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
 			// Extract hash from OpenSSL::Digest.new('SHA256') in the same pattern context
@@ -478,6 +491,227 @@ func rubySecureRandom() *detection.Rule {
 }
 
 // ============================================================================
+// Insecure PRNG — Kernel#rand / Random
+// ============================================================================
+
+// rubyInsecureRandom detects Ruby's built-in non-cryptographic random sources:
+//   - rand(n) / rand()          — Kernel#rand, seeded from the clock
+//   - Random.rand(n)            — explicit call on the default PRNG
+//   - Random.new(seed)          — deterministic seeded PRNG instance
+//
+// These are NOT cryptographically secure and must not be used for tokens,
+// passwords, nonces, or any security-sensitive value. Use SecureRandom instead.
+func rubyInsecureRandom() *detection.Rule {
+	return &detection.Rule{
+		ID:        "ruby-insecure-random",
+		Language:  detection.LangRuby,
+		Bundle:    "RubyStdlib",
+		Pattern:   regexp.MustCompile(`\brand\s*\(|\bRandom\s*\.\s*(?:rand|new)\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("Kernel#rand", model.PrimitivePRNG, loc)
+			algo.AddFunction(model.FuncGenerate)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// ============================================================================
+// OpenSSL::PKey — generic v3+ API
+// ============================================================================
+
+// rubyOpenSSLPKeyGenerate detects OpenSSL::PKey.generate_key("RSA", {...})
+// and OpenSSL::PKey.generate_parameters("DH", {...}) — the preferred API
+// since OpenSSL 3.x / ruby/openssl 3.0.
+func rubyOpenSSLPKeyGenerate() *detection.Rule {
+	return &detection.Rule{
+		ID:        "ruby-openssl-pkey-generate",
+		Language:  detection.LangRuby,
+		Bundle:    "RubyOpenSSL",
+		Pattern:   regexp.MustCompile(`OpenSSL\s*::\s*PKey\s*\.\s*(?:generate_key|generate_parameters)\s*\(\s*['"]([^'"]+)['"]`),
+		MatchType: detection.MatchMethodCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			name, prim := rubyPKeyNameAndPrimitive(match[1])
+			algo := model.NewAlgorithm(name, prim, loc)
+			algo.AddFunction(model.FuncKeyGen)
+			privKey := model.NewKey(name, model.KindPrivateKey, loc)
+			privKey.Put(algo)
+			pubKey := model.NewKey(name, model.KindPublicKey, loc)
+			pubKey.Put(algo)
+			return []model.INode{privKey, pubKey}
+		},
+	}
+}
+
+// rubyOpenSSLPKeySign detects key.sign(digest, data) and key.sign_raw(nil, data)
+// used for RSA/EC/DSA signing via the generic PKey API.
+func rubyOpenSSLPKeySign() *detection.Rule {
+	return &detection.Rule{
+		ID:        "ruby-openssl-pkey-sign",
+		Language:  detection.LangRuby,
+		Bundle:    "RubyOpenSSL",
+		Pattern:   regexp.MustCompile(`\.(?:sign_raw|sign)\s*\(\s*(?:OpenSSL::Digest|['"][a-zA-Z0-9_-]+['"]|nil)`),
+		MatchType: detection.MatchMethodCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("PKey/sign", model.PrimitiveSignature, loc)
+			algo.AddFunction(model.FuncSign)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// rubyOpenSSLPKeyVerify detects key.verify(digest, sig, data) and
+// key.verify_raw(nil, sig, data) used for RSA/EC/DSA signature verification.
+func rubyOpenSSLPKeyVerify() *detection.Rule {
+	return &detection.Rule{
+		ID:        "ruby-openssl-pkey-verify",
+		Language:  detection.LangRuby,
+		Bundle:    "RubyOpenSSL",
+		Pattern:   regexp.MustCompile(`\.(?:verify_raw|verify)\s*\(\s*(?:OpenSSL::Digest|['"][a-zA-Z0-9_-]+['"]|nil)`),
+		MatchType: detection.MatchMethodCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("PKey/verify", model.PrimitiveSignature, loc)
+			algo.AddFunction(model.FuncVerify)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// rubyOpenSSLPKeyDerive detects key.derive(other_pubkey) — ECDH / DH shared
+// secret derivation using the modern OpenSSL::PKey API.
+// Also catches EC#dh_compute_key and DH#compute_key (older compat methods).
+func rubyOpenSSLPKeyDerive() *detection.Rule {
+	return &detection.Rule{
+		ID:        "ruby-openssl-pkey-derive",
+		Language:  detection.LangRuby,
+		Bundle:    "RubyOpenSSL",
+		Pattern:   regexp.MustCompile(`\.(?:derive|dh_compute_key|compute_key)\s*\(`),
+		MatchType: detection.MatchMethodCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			name := "ECDH"
+			if strings.Contains(match[0], "compute_key") && !strings.Contains(match[0], "dh_compute_key") {
+				name = "DH"
+			}
+			algo := model.NewAlgorithm(name, model.PrimitiveKeyAgreement, loc)
+			algo.AddFunction(model.FuncKeyDerive)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// ============================================================================
+// OpenSSL::KDF — key derivation module (ruby/openssl 2.2+)
+// ============================================================================
+
+// rubyOpenSSLKDF detects OpenSSL::KDF.pbkdf2_hmac, OpenSSL::KDF.scrypt, and
+// OpenSSL::KDF.hkdf — the modern KDF API that replaces PKCS5 wrappers.
+func rubyOpenSSLKDF() *detection.Rule {
+	return &detection.Rule{
+		ID:        "ruby-openssl-kdf",
+		Language:  detection.LangRuby,
+		Bundle:    "RubyOpenSSL",
+		Pattern:   regexp.MustCompile(`OpenSSL\s*::\s*KDF\s*\.\s*(pbkdf2_hmac|scrypt|hkdf)\s*\(`),
+		MatchType: detection.MatchMethodCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			var name string
+			switch strings.ToLower(match[1]) {
+			case "scrypt":
+				name = "scrypt"
+			case "hkdf":
+				name = "HKDF"
+			default:
+				name = "PBKDF2"
+			}
+			algo := model.NewAlgorithm(name, model.PrimitiveKeyDerivation, loc)
+			algo.AddFunction(model.FuncKeyDerive)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// ============================================================================
+// OpenSSL::SSL — TLS version configuration
+// ============================================================================
+
+// rubyOpenSSLSSLVersion detects explicit TLS version pinning:
+//
+//	ctx.ssl_version = :TLSv1    (deprecated, forces a single version)
+//	ctx.min_version = OpenSSL::SSL::TLS1_VERSION
+//	ctx.max_version = OpenSSL::SSL::TLS1_2_VERSION
+func rubyOpenSSLSSLVersion() *detection.Rule {
+	return &detection.Rule{
+		ID:        "ruby-openssl-ssl-version",
+		Language:  detection.LangRuby,
+		Bundle:    "RubyOpenSSL",
+		Pattern:   regexp.MustCompile(`\.(?:ssl_version|min_version|max_version)\s*=\s*(.+)`),
+		MatchType: detection.MatchMethodCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			version := "TLS"
+			if len(match) >= 2 {
+				val := strings.TrimSpace(match[1])
+				switch {
+				case strings.Contains(val, "SSL2") || strings.Contains(val, "SSLv2"):
+					version = "SSLv2"
+				case strings.Contains(val, "SSL3") || strings.Contains(val, "SSLv3"):
+					version = "SSLv3"
+				case strings.Contains(val, "TLS1_1") || strings.Contains(val, "TLSv1_1"):
+					version = "TLS1.1"
+				case strings.Contains(val, "TLS1_2") || strings.Contains(val, "TLSv1_2"):
+					version = "TLS1.2"
+				case strings.Contains(val, "TLS1") || strings.Contains(val, "TLSv1"):
+					version = "TLS1.0"
+				}
+			}
+			return []model.INode{model.NewProtocol(version, loc)}
+		},
+	}
+}
+
+// ============================================================================
+// BCrypt gem — Devise-specific usage patterns
+// ============================================================================
+
+// rubyBcryptPasswordNew detects BCrypt::Password.new(hashed_string) — loads
+// an existing bcrypt hash for comparison, used by Devise's encryptor.
+func rubyBcryptPasswordNew() *detection.Rule {
+	return &detection.Rule{
+		ID:        "ruby-bcrypt-password-new",
+		Language:  detection.LangRuby,
+		Bundle:    "RubyBcrypt",
+		Pattern:   regexp.MustCompile(`BCrypt\s*::\s*Password\s*\.\s*new\s*\(`),
+		MatchType: detection.MatchMethodCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("bcrypt", model.PrimitivePasswordHash, loc)
+			algo.AddFunction(model.FuncVerify)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// rubyBcryptEngineHash detects BCrypt::Engine.hash_secret(password, salt) —
+// the low-level bcrypt computation called by Devise when verifying passwords.
+func rubyBcryptEngineHash() *detection.Rule {
+	return &detection.Rule{
+		ID:        "ruby-bcrypt-engine-hash",
+		Language:  detection.LangRuby,
+		Bundle:    "RubyBcrypt",
+		Pattern:   regexp.MustCompile(`BCrypt\s*::\s*Engine\s*\.\s*hash_secret\s*\(`),
+		MatchType: detection.MatchMethodCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("bcrypt", model.PrimitivePasswordHash, loc)
+			algo.AddFunction(model.FuncKeyDerive)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// ============================================================================
 // Helper functions
 // ============================================================================
 
@@ -574,6 +808,28 @@ func normalizeRubyECCurve(curve string) string {
 	}
 }
 
+// rubyPKeyNameAndPrimitive maps an OpenSSL algorithm string like "RSA", "EC",
+// "DH", "DSA" to a canonical name and the appropriate CBOM primitive.
+func rubyPKeyNameAndPrimitive(raw string) (string, model.Primitive) {
+	upper := strings.ToUpper(strings.TrimSpace(raw))
+	switch upper {
+	case "RSA":
+		return "RSA", model.PrimitivePublicKeyEncryption
+	case "EC":
+		return "EC", model.PrimitiveSignature
+	case "DSA":
+		return "DSA", model.PrimitiveSignature
+	case "DH":
+		return "DH", model.PrimitiveKeyAgreement
+	case "ED25519", "EDDSA":
+		return "Ed25519", model.PrimitiveSignature
+	case "X25519":
+		return "X25519", model.PrimitiveKeyAgreement
+	default:
+		return raw, model.PrimitiveUnknown
+	}
+}
+
 func rubyJWTAlgorithmPrimitive(alg string) model.Primitive {
 	upper := strings.ToUpper(alg)
 	switch {
@@ -600,4 +856,27 @@ func parseRubyInt(s string) int {
 		val = val*10 + int(c-'0')
 	}
 	return val
+}
+
+// ============================================================================
+// Argon2 gem
+// ============================================================================
+
+// rubyArgon2 detects usage of the `argon2` gem for password hashing:
+//   - Argon2::Password.create(password, ...)
+//   - Argon2::Password.new(hash)
+//   - Argon2::Password.verify_password(hash, password)
+func rubyArgon2() *detection.Rule {
+	return &detection.Rule{
+		ID:       "ruby-argon2",
+		Language: detection.LangRuby,
+		Bundle:   "RubyArgon2",
+		Pattern:  regexp.MustCompile(`\bArgon2\s*::\s*Password\s*\.\s*(create|new|verify_password)\s*\(`),
+		MatchType: detection.MatchMethodCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("Argon2", model.PrimitiveKeyDerivation, loc)
+			algo.AddFunction(model.FuncKeyDerive)
+			return []model.INode{algo}
+		},
+	}
 }

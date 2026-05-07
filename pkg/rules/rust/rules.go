@@ -79,6 +79,8 @@ func allRustRules() []*detection.Rule {
 		rustJWTAlgorithm(),
 		// ── SQLCipher (database-level AES-256 encryption) ────────────────────
 		rustSQLCipherPragmaKey(),
+		// ── rand crate — insecure PRNG ────────────────────────────────────────
+		rustInsecureRandom(),
 	}
 }
 
@@ -1059,6 +1061,28 @@ func normalizeRustSignatureScheme(name string) (string, model.Primitive) {
 		return "RSA-PKCS1-SHA512", model.PrimitiveSignature
 	default:
 		return name, model.PrimitiveSignature
+	}
+}
+
+// ============================================================================
+// rand crate — insecure (non-cryptographic) PRNG
+// ============================================================================
+
+// rustInsecureRandom detects usage of the rand crate's non-cryptographic
+// generators: thread_rng(), random(), SmallRng, StdRng (all are non-CSPRNG).
+// These must not be used for tokens, keys, nonces, or any security value.
+func rustInsecureRandom() *detection.Rule {
+	return &detection.Rule{
+		ID:       "rust-rand-insecure",
+		Language: detection.LangRust,
+		Bundle:   "RustStdlib",
+		Pattern:  regexp.MustCompile(`\brand\s*::\s*(?:thread_rng|random|rngs\s*::\s*(?:StdRng|SmallRng|ThreadRng)|Rng\b)`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("rand", model.PrimitivePRNG, loc)
+			algo.AddFunction(model.FuncGenerate)
+			return []model.INode{algo}
+		},
 	}
 }
 

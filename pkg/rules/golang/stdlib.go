@@ -68,10 +68,9 @@ func allGoRules() []*detection.Rule {
 		goTLSDial(),
 		goTLSListen(),
 		goTLSCipherSuites(),
-		// ── SHA3 (golang.org/x/crypto/sha3) ──────────────────────────────────
-		goSHA3(),
-		// ── ECDH (crypto/ecdh — Go 1.20+) ───────────────────────────────────
-		goECDH(),
+		goTLSCurvePreferences(),
+		// ── Post-Quantum TLS (Go 1.23+ hybrid KEM) ───────────────────────────
+		goX25519MLKEM768(),
 		// ── golang.org/x/crypto ───────────────────────────────────────────────
 		goChaCha20Poly1305(),
 		goXChaCha20Poly1305(),
@@ -92,6 +91,24 @@ func allGoRules() []*detection.Rule {
 		// ── JWT libraries ─────────────────────────────────────────────────────
 		goJWTNewWithClaims(),
 		goJWTSigningMethod(),
+		// ── Shamir's Secret Sharing (hashicorp/vault/shamir) ──────────────────
+		goShamirSplit(),
+		// ── OTP (github.com/pquerna/otp) ──────────────────────────────────────
+		goTOTPGenerate(),
+		goHOTPGenerate(),
+		// ── AES-CMAC via Google Tink (tink-crypto/tink-go) ───────────────────
+		goTinkAESCMAC(),
+		// ── crypto/x509 — certificate and key operations ─────────────────────
+		goX509CreateCertificate(),
+		goX509ParseCertificate(),
+		goX509ParsePKCS8PrivateKey(),
+		goX509ParsePKCS1PrivateKey(),
+		goX509ParseECPrivateKey(),
+		goX509MarshalPrivateKey(),
+		// ── crypto/tls — keypair loading ─────────────────────────────────────
+		goTLSLoadX509KeyPair(),
+		// ── math/rand — insecure PRNG (security finding) ─────────────────────
+		goMathRandInsecure(),
 	}
 }
 
@@ -192,7 +209,9 @@ func goCipherNewCBC() *detection.Rule {
 		Pattern:   regexp.MustCompile(`cipher\.NewCBC(?:Encrypter|Decrypter)\s*\(`),
 		MatchType: detection.MatchFunctionCall,
 		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
-			algo := model.NewAlgorithm("AES-CBC", model.PrimitiveBlockCipher, loc)
+			// cipher.NewCBCEncrypter wraps ANY block cipher (AES, DES, 3DES…).
+			// Name the mode only; the block cipher is detected by its own rule.
+			algo := model.NewAlgorithm("CBC", model.PrimitiveBlockCipher, loc)
 			algo.AddFunction(model.FuncEncrypt)
 			algo.AddFunction(model.FuncDecrypt)
 			algo.Put(model.NewMode("CBC"))
@@ -209,7 +228,8 @@ func goCipherNewCFB() *detection.Rule {
 		Pattern:   regexp.MustCompile(`cipher\.NewCFB(?:Encrypter|Decrypter)\s*\(`),
 		MatchType: detection.MatchFunctionCall,
 		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
-			algo := model.NewAlgorithm("AES-CFB", model.PrimitiveBlockCipher, loc)
+			// cipher.NewCFBEncrypter wraps ANY block cipher.
+			algo := model.NewAlgorithm("CFB", model.PrimitiveBlockCipher, loc)
 			algo.AddFunction(model.FuncEncrypt)
 			algo.AddFunction(model.FuncDecrypt)
 			algo.Put(model.NewMode("CFB"))
@@ -226,7 +246,8 @@ func goCipherNewOFB() *detection.Rule {
 		Pattern:   regexp.MustCompile(`cipher\.NewOFB\s*\(`),
 		MatchType: detection.MatchFunctionCall,
 		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
-			algo := model.NewAlgorithm("AES-OFB", model.PrimitiveBlockCipher, loc)
+			// cipher.NewOFB wraps ANY block cipher.
+			algo := model.NewAlgorithm("OFB", model.PrimitiveBlockCipher, loc)
 			algo.AddFunction(model.FuncEncrypt)
 			algo.AddFunction(model.FuncDecrypt)
 			algo.Put(model.NewMode("OFB"))
@@ -243,7 +264,8 @@ func goCipherNewCTR() *detection.Rule {
 		Pattern:   regexp.MustCompile(`cipher\.NewCTR\s*\(`),
 		MatchType: detection.MatchFunctionCall,
 		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
-			algo := model.NewAlgorithm("AES-CTR", model.PrimitiveBlockCipher, loc)
+			// cipher.NewCTR wraps ANY block cipher.
+			algo := model.NewAlgorithm("CTR", model.PrimitiveBlockCipher, loc)
 			algo.AddFunction(model.FuncEncrypt)
 			algo.AddFunction(model.FuncDecrypt)
 			algo.Put(model.NewMode("CTR"))
@@ -1183,5 +1205,313 @@ func normalizeGoHashPackageName(pkg string) string {
 		return "SHA3-512"
 	default:
 		return strings.ToUpper(pkg)
+	}
+}
+
+// ============================================================================
+// TLS curve preferences (crypto/tls CurveID constants)
+// ============================================================================
+
+// goTLSCurvePreferences detects TLS curve preferences set in tls.Config, e.g.
+// CurvePreferences: []tls.CurveID{tls.X25519, tls.CurveP256}.
+func goTLSCurvePreferences() *detection.Rule {
+	return &detection.Rule{
+		ID:        "go-tls-curve-preferences",
+		Language:  detection.LangGo,
+		Bundle:    "GoStdlib",
+		Pattern:   regexp.MustCompile(`\btls\.(X25519|CurveP256|CurveP384|CurveP521)\b`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			if len(match) < 2 {
+				return nil
+			}
+			name := normalizeTLSCurve(match[1])
+			algo := model.NewAlgorithm(name, model.PrimitiveKeyAgreement, loc)
+			algo.Put(model.NewEllipticCurve(name))
+			return []model.INode{algo}
+		},
+	}
+}
+
+func normalizeTLSCurve(c string) string {
+	switch c {
+	case "X25519":
+		return "X25519"
+	case "CurveP256":
+		return "P-256"
+	case "CurveP384":
+		return "P-384"
+	case "CurveP521":
+		return "P-521"
+	default:
+		return c
+	}
+}
+
+// ============================================================================
+// Post-Quantum TLS: X25519MLKEM768 hybrid KEM (Go 1.23+, tls.X25519MLKEM768)
+// ============================================================================
+
+// goX25519MLKEM768 detects the use of the Post-Quantum hybrid key exchange
+// X25519MLKEM768 (X25519 + ML-KEM-768) introduced in Go 1.23.
+// Used in tls.Config CurvePreferences or Caddy's SupportedCurves map.
+func goX25519MLKEM768() *detection.Rule {
+	return &detection.Rule{
+		ID:        "go-tls-x25519mlkem768",
+		Language:  detection.LangGo,
+		Bundle:    "GoStdlib",
+		Pattern:   regexp.MustCompile(`\btls\.X25519MLKEM768\b`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("X25519MLKEM768", model.PrimitiveKeyEncapsulation, loc)
+			algo.AddFunction(model.FuncEncapsulate)
+			algo.AddFunction(model.FuncDecapsulate)
+			algo.Put(model.NewEllipticCurve("X25519"))
+			return []model.INode{algo}
+		},
+	}
+}
+
+// ============================================================================
+// Shamir's Secret Sharing (github.com/hashicorp/vault/shamir)
+// ============================================================================
+
+// goShamirSplit detects calls to shamir.Split and shamir.Combine, which
+// implement Shamir's Secret Sharing scheme for key splitting/reconstruction.
+func goShamirSplit() *detection.Rule {
+	return &detection.Rule{
+		ID:        "go-shamir-split",
+		Language:  detection.LangGo,
+		Bundle:    "GoVault",
+		Pattern:   regexp.MustCompile(`\bshamir\.(Split|Combine)\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			fn := FuncShamirSplit
+			if len(match) >= 2 && match[1] == "Combine" {
+				fn = FuncShamirCombine
+			}
+			algo := model.NewAlgorithm("Shamir-Secret-Sharing", model.PrimitiveKeyDerivation, loc)
+			algo.AddFunction(fn)
+			return []model.INode{algo}
+		},
+	}
+}
+
+const (
+	FuncShamirSplit   model.CryptoFunc = "split"
+	FuncShamirCombine model.CryptoFunc = "combine"
+)
+
+// ============================================================================
+// OTP: TOTP and HOTP (github.com/pquerna/otp)
+// ============================================================================
+
+// goTOTPGenerate detects TOTP code generation and validation calls from the
+// pquerna/otp library, which implements RFC 6238 (TOTP = HMAC-based OTP).
+func goTOTPGenerate() *detection.Rule {
+	return &detection.Rule{
+		ID:        "go-totp-generate",
+		Language:  detection.LangGo,
+		Bundle:    "GoOTP",
+		Pattern:   regexp.MustCompile(`\btotp\.(Generate(?:WithCustomOptions)?|Validate(?:Custom)?|GenerateCode(?:WithCustomOptions)?|ValidateCustom)\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("TOTP", model.PrimitiveMAC, loc)
+			algo.AddFunction(model.FuncTag)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// goHOTPGenerate detects HOTP code generation and validation calls from the
+// pquerna/otp library, which implements RFC 4226 (HOTP = HMAC-based OTP).
+func goHOTPGenerate() *detection.Rule {
+	return &detection.Rule{
+		ID:        "go-hotp-generate",
+		Language:  detection.LangGo,
+		Bundle:    "GoOTP",
+		Pattern:   regexp.MustCompile(`\bhotp\.(Generate(?:WithCustomOptions)?|Validate(?:Custom)?|GenerateCode(?:WithCustomOptions)?|ValidateCustom)\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("HOTP", model.PrimitiveMAC, loc)
+			algo.AddFunction(model.FuncTag)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// ============================================================================
+// AES-CMAC via Google Tink (github.com/tink-crypto/tink-go/v2/kwp/subtle)
+// ============================================================================
+
+// goTinkAESCMAC detects AES-CMAC construction via Google Tink's kwp/subtle
+// package, used in Vault's transit secrets engine for CMAC key types.
+func goTinkAESCMAC() *detection.Rule {
+	return &detection.Rule{
+		ID:        "go-tink-aescmac",
+		Language:  detection.LangGo,
+		Bundle:    "GoTink",
+		Pattern:   regexp.MustCompile(`\bsubtle\.NewAESCMAC\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("AES-CMAC", model.PrimitiveMAC, loc)
+			algo.AddFunction(model.FuncTag)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// ============================================================================
+// crypto/x509 — certificate and key operations (any Go project)
+// ============================================================================
+
+// goX509CreateCertificate detects x509.CreateCertificate, used to generate
+// self-signed or CA-signed X.509 certificates in any Go PKI tool or server.
+func goX509CreateCertificate() *detection.Rule {
+	return &detection.Rule{
+		ID:        "go-x509-createcertificate",
+		Language:  detection.LangGo,
+		Bundle:    "GoStdlib",
+		Pattern:   regexp.MustCompile(`\bx509\.CreateCertificate(?:Request)?\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("X.509", model.PrimitivePublicKeyEncryption, loc)
+			algo.AddFunction(model.FuncKeyGen)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// goX509ParseCertificate detects x509.ParseCertificate and
+// x509.ParseCertificates, used whenever TLS certificates are loaded or
+// inspected at runtime in any Go application.
+func goX509ParseCertificate() *detection.Rule {
+	return &detection.Rule{
+		ID:        "go-x509-parsecertificate",
+		Language:  detection.LangGo,
+		Bundle:    "GoStdlib",
+		Pattern:   regexp.MustCompile(`\bx509\.ParseCertificate(?:s|Request)?\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("X.509", model.PrimitivePublicKeyEncryption, loc)
+			algo.AddFunction(model.FuncVerify)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// goX509ParsePKCS8PrivateKey detects parsing of PKCS#8-encoded private keys
+// (RSA, ECDSA, Ed25519). Used in any Go app that loads private keys from PEM/DER.
+func goX509ParsePKCS8PrivateKey() *detection.Rule {
+	return &detection.Rule{
+		ID:        "go-x509-parsepkcs8privatekey",
+		Language:  detection.LangGo,
+		Bundle:    "GoStdlib",
+		Pattern:   regexp.MustCompile(`\bx509\.ParsePKCS8PrivateKey\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			key := model.NewKey("PKCS8-PrivateKey", model.KindPrivateKey, loc)
+			return []model.INode{key}
+		},
+	}
+}
+
+// goX509ParsePKCS1PrivateKey detects parsing of PKCS#1-encoded RSA private keys.
+// Very common in any Go app loading RSA keys from PEM files.
+func goX509ParsePKCS1PrivateKey() *detection.Rule {
+	return &detection.Rule{
+		ID:        "go-x509-parsepkcs1privatekey",
+		Language:  detection.LangGo,
+		Bundle:    "GoStdlib",
+		Pattern:   regexp.MustCompile(`\bx509\.ParsePKCS1(?:Private|Public)Key\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("RSA", model.PrimitivePublicKeyEncryption, loc)
+			key := model.NewKey("RSA", model.KindPrivateKey, loc)
+			key.Put(algo)
+			return []model.INode{key}
+		},
+	}
+}
+
+// goX509ParseECPrivateKey detects parsing of SEC1-encoded EC private keys.
+// Used in any Go TLS server or crypto tool loading elliptic curve keys.
+func goX509ParseECPrivateKey() *detection.Rule {
+	return &detection.Rule{
+		ID:        "go-x509-parseecprivatekey",
+		Language:  detection.LangGo,
+		Bundle:    "GoStdlib",
+		Pattern:   regexp.MustCompile(`\bx509\.ParseECPrivateKey\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("ECDSA", model.PrimitiveSignature, loc)
+			key := model.NewKey("ECDSA", model.KindPrivateKey, loc)
+			key.Put(algo)
+			return []model.INode{key}
+		},
+	}
+}
+
+// goX509MarshalPrivateKey detects marshaling of private keys to DER/PKCS#8 format.
+// Covers MarshalPKCS8PrivateKey, MarshalPKCS1PrivateKey, MarshalECPrivateKey.
+func goX509MarshalPrivateKey() *detection.Rule {
+	return &detection.Rule{
+		ID:        "go-x509-marshalprivatekey",
+		Language:  detection.LangGo,
+		Bundle:    "GoStdlib",
+		Pattern:   regexp.MustCompile(`\bx509\.Marshal(?:PKCS8PrivateKey|PKCS1(?:Private|Public)Key|ECPrivateKey|PKIX(?:PublicKey)?)\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("X.509", model.PrimitivePublicKeyEncryption, loc)
+			algo.AddFunction(model.FuncKeyGen)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// ============================================================================
+// crypto/tls — keypair loading (any Go HTTPS server)
+// ============================================================================
+
+// goTLSLoadX509KeyPair detects tls.LoadX509KeyPair and tls.X509KeyPair, which
+// load a certificate and private key for TLS in any Go HTTPS server or client.
+func goTLSLoadX509KeyPair() *detection.Rule {
+	return &detection.Rule{
+		ID:        "go-tls-loadx509keypair",
+		Language:  detection.LangGo,
+		Bundle:    "GoStdlib",
+		Pattern:   regexp.MustCompile(`\btls\.(?:LoadX509KeyPair|X509KeyPair)\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			proto := model.NewProtocol("TLS", loc)
+			key := model.NewKey("X.509", model.KindPublicKey, loc)
+			return []model.INode{proto, key}
+		},
+	}
+}
+
+// ============================================================================
+// math/rand — insecure PRNG (any Go project using non-cryptographic random)
+// ============================================================================
+
+// goMathRandInsecure detects usage of math/rand (non-cryptographic), which is
+// a security risk when used for secrets, tokens, or cryptographic purposes.
+//
+// The pattern matches either the import path "math/rand" on import lines, OR
+// calls to functions that are EXCLUSIVE to math/rand (not present in crypto/rand).
+// This avoids false positives against crypto/rand.Read / crypto/rand.Int /
+// crypto/rand.Prime / crypto/rand.Text, which are detected by go-crypto-rand-read.
+func goMathRandInsecure() *detection.Rule {
+	return &detection.Rule{
+		ID:        "go-mathrand-insecure",
+		Language:  detection.LangGo,
+		Bundle:    "GoStdlib",
+		Pattern:   regexp.MustCompile(`\bmath/rand\b|\brand\.(New|Seed|Intn|Int63n?|Int31n?|Float(?:32|64)|Uint(?:32|64)|Perm|Shuffle)\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("math/rand", model.PrimitivePRNG, loc)
+			algo.AddFunction(model.FuncGenerate)
+			return []model.INode{algo}
+		},
 	}
 }

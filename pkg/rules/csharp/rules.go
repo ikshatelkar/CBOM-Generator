@@ -89,6 +89,12 @@ func allCSharpRules() []*detection.Rule {
 		csCreateDecryptor(),
 		// ── X.509 certificates ────────────────────────────────────────────────
 		csX509Certificate2(),
+		// ── Insecure PRNG ─────────────────────────────────────────────────────
+		csInsecureRandom(),
+		// ── HKDF (.NET 5+) ───────────────────────────────────────────────────
+		csHKDF(),
+		// ── BCrypt.Net ────────────────────────────────────────────────────────
+		csBCryptNet(),
 	}
 }
 
@@ -989,6 +995,69 @@ func csX509Certificate2() *detection.Rule {
 // ============================================================================
 // Helper functions
 // ============================================================================
+
+// ============================================================================
+// Insecure PRNG — System.Random
+// ============================================================================
+
+// csInsecureRandom detects new System.Random() / new Random() — the .NET
+// non-cryptographic PRNG. Its output is deterministic and predictable.
+// Use RandomNumberGenerator for security-sensitive values instead.
+func csInsecureRandom() *detection.Rule {
+	return &detection.Rule{
+		ID:       "cs-random-insecure",
+		Language: detection.LangCSharp,
+		Bundle:   "DotNetCrypto",
+		Pattern:  regexp.MustCompile(`\bnew\s+(?:System\s*\.\s*)?Random\s*\(`),
+		MatchType: detection.MatchConstructor,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("System.Random", model.PrimitivePRNG, loc)
+			algo.AddFunction(model.FuncGenerate)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// ============================================================================
+// HKDF — .NET 5+ (System.Security.Cryptography.HKDF)
+// ============================================================================
+
+// csHKDF detects HKDF.DeriveKey / HKDF.Extract / HKDF.Expand — the .NET 5+
+// HMAC-based key derivation function.
+func csHKDF() *detection.Rule {
+	return &detection.Rule{
+		ID:       "cs-hkdf",
+		Language: detection.LangCSharp,
+		Bundle:   "DotNetCrypto",
+		Pattern:  regexp.MustCompile(`\bHKDF\s*\.\s*(DeriveKey|Extract|Expand)\s*\(`),
+		MatchType: detection.MatchMethodCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("HKDF", model.PrimitiveKeyDerivation, loc)
+			algo.AddFunction(model.FuncKeyDerive)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// ============================================================================
+// BCrypt.Net — BCrypt.Net-Next / BCrypt.Net
+// ============================================================================
+
+// csBCryptNet detects BCrypt.Net.BCrypt.HashPassword / VerifyPassword / CheckPassword.
+func csBCryptNet() *detection.Rule {
+	return &detection.Rule{
+		ID:       "cs-bcrypt-net",
+		Language: detection.LangCSharp,
+		Bundle:   "BCryptNet",
+		Pattern:  regexp.MustCompile(`\bBCrypt\s*\.\s*(?:Net\s*\.\s*BCrypt\s*\.\s*)?(?:HashPassword|VerifyPassword|CheckPassword|EnhancedHashPassword|EnhancedVerify)\s*\(`),
+		MatchType: detection.MatchMethodCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("bcrypt", model.PrimitiveKeyDerivation, loc)
+			algo.AddFunction(model.FuncKeyDerive)
+			return []model.INode{algo}
+		},
+	}
+}
 
 func classifyCSAlgorithmName(name string) model.Primitive {
 	upper := strings.ToUpper(name)

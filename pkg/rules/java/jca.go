@@ -8,6 +8,17 @@ import (
 	"github.com/cbom-scanner/pkg/model"
 )
 
+// knownBogusJCAAlgos lists placeholder/test strings and non-cryptographic
+// algorithm names that may appear inside Cipher/MessageDigest/Mac/Signature
+// .getInstance() calls in test or example code. We skip these to avoid
+// false positives.
+var knownBogusJCAAlgos = map[string]bool{
+	// Test / placeholder strings
+	"FOO": true, "BAR": true, "BAZ": true, "ABCDEF": true, "TEST": true, "DUMMY": true,
+	// xxHash — non-cryptographic
+	"XXH3": true, "XXH128": true, "XXH32": true, "XXH64": true,
+}
+
 // RegisterJCADetectionRules registers all Java Cryptography Architecture detection rules.
 func RegisterJCADetectionRules(registry *detection.RuleRegistry) {
 	for _, r := range jcaRules() {
@@ -37,6 +48,7 @@ func jcaRules() []*detection.Rule {
 		keyStoreGetKey(),
 		keyStoreSetKeyEntry(),
 		jcaContentSignerBuilder(),
+		javaInsecureRandom(),
 	}
 }
 
@@ -58,6 +70,9 @@ func extractCipherAlgorithm(match []string, loc model.DetectionLocation) []model
 		return nil
 	}
 	raw := match[1] // e.g. "AES/CBC/PKCS5Padding"
+	if knownBogusJCAAlgos[strings.ToUpper(strings.Split(raw, "/")[0])] {
+		return nil
+	}
 	parts := strings.Split(raw, "/")
 
 	algoName := parts[0]
@@ -94,6 +109,9 @@ func messageDigestGetInstance() *detection.Rule {
 			if len(match) < 2 {
 				return nil
 			}
+			if knownBogusJCAAlgos[strings.ToUpper(match[1])] {
+				return nil
+			}
 			algo := model.NewAlgorithm(match[1], model.PrimitiveHash, loc)
 			algo.AddFunction(model.FuncDigest)
 			return []model.INode{algo}
@@ -112,6 +130,9 @@ func signatureGetInstance() *detection.Rule {
 		MatchType: detection.MatchMethodCall,
 		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
 			if len(match) < 2 {
+				return nil
+			}
+			if knownBogusJCAAlgos[strings.ToUpper(match[1])] {
 				return nil
 			}
 			algo := model.NewAlgorithm(match[1], model.PrimitiveSignature, loc)
@@ -133,6 +154,9 @@ func macGetInstance() *detection.Rule {
 		MatchType: detection.MatchMethodCall,
 		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
 			if len(match) < 2 {
+				return nil
+			}
+			if knownBogusJCAAlgos[strings.ToUpper(match[1])] {
 				return nil
 			}
 			algo := model.NewAlgorithm(match[1], model.PrimitiveMAC, loc)
@@ -477,6 +501,26 @@ func jcaContentSignerBuilder() *detection.Rule {
 			}
 			algo := model.NewAlgorithm(match[1], model.PrimitiveSignature, loc)
 			algo.AddFunction(model.FuncSign)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// --- java.util.Random / ThreadLocalRandom — insecure PRNG ---
+// new Random() and ThreadLocalRandom produce non-cryptographic pseudo-random
+// output that is predictable given the seed. They must not be used for
+// security-sensitive values such as tokens, nonces, or passwords.
+
+func javaInsecureRandom() *detection.Rule {
+	return &detection.Rule{
+		ID:       "jca-insecure-random",
+		Language: detection.LangJava,
+		Bundle:   "JCA",
+		Pattern:  regexp.MustCompile(`\bnew\s+(?:java\.util\.)?Random\s*\(|\bThreadLocalRandom\s*\.\s*current\s*\(`),
+		MatchType: detection.MatchConstructor,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("java.util.Random", model.PrimitivePRNG, loc)
+			algo.AddFunction(model.FuncGenerate)
 			return []model.INode{algo}
 		},
 	}

@@ -109,6 +109,7 @@ func allPythonRules() []*detection.Rule {
 		pycaPKCS7(),
 		pycaECCurveStandalone(),
 		pycaModeReference(),
+		pyInsecureRandom(),
 	}
 }
 
@@ -1695,6 +1696,31 @@ func pycaModeReference() *detection.Rule {
 				return nil
 			}
 			return []model.INode{model.NewMode(match[1])}
+		},
+	}
+}
+
+// ============================================================================
+// Insecure PRNG — Python stdlib random module
+// ============================================================================
+
+// pyInsecureRandom detects Python's built-in random module — the non-cryptographic
+// PRNG seeded from os.urandom() but internally a Mersenne Twister (MT19937).
+// Its internal state can be reconstructed from 624 consecutive outputs, making
+// it unsuitable for security-sensitive values. Use the `secrets` module or
+// os.urandom() for cryptographic purposes instead.
+func pyInsecureRandom() *detection.Rule {
+	return &detection.Rule{
+		ID:       "py-random-insecure",
+		Language: detection.LangPython,
+		Bundle:   "PyStdlib",
+		Pattern: regexp.MustCompile(
+			`\brandom\s*\.\s*(random|randint|randrange|choice|choices|shuffle|sample|uniform|randbytes)\s*\(`),
+		MatchType: detection.MatchFunctionCall,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("random.random", model.PrimitivePRNG, loc)
+			algo.AddFunction(model.FuncGenerate)
+			return []model.INode{algo}
 		},
 	}
 }

@@ -48,8 +48,9 @@ func allFlutterRules() []*detection.Rule {
 		dartPointyCastleSigner(),
 		dartPointyCastleAsymmetricKeyPairGenerator(),
 		dartPointyCastleKDF(),
-		// ── dart:math CSPRNG ─────────────────────────────────────────────────
+		// ── dart:math CSPRNG / insecure PRNG ─────────────────────────────────
 		dartRandomSecure(),
+		dartInsecureRandom(),
 		// ── JWT libraries (dart_jsonwebtoken, jose) ───────────────────────────
 		dartJWTSign(),
 		// ── package:encrypt ───────────────────────────────────────────────────
@@ -776,6 +777,29 @@ func dartRandomSecure() *detection.Rule {
 		MatchType: detection.MatchConstructor,
 		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
 			algo := model.NewAlgorithm("Random.secure", model.PrimitivePRNG, loc)
+			algo.AddFunction(model.FuncGenerate)
+			return []model.INode{algo}
+		},
+	}
+}
+
+// ============================================================================
+// dart:math — Random() insecure PRNG (non-secure variant)
+// ============================================================================
+
+// dartInsecureRandom detects plain Random() / Random(seed) — Dart's
+// non-cryptographic PRNG from dart:math. Unlike Random.secure(), this
+// generator is seeded from the clock and is predictable. It must not be
+// used for security-sensitive values.
+func dartInsecureRandom() *detection.Rule {
+	return &detection.Rule{
+		ID:        "dart-random-insecure",
+		Language:  detection.LangDart,
+		Bundle:    "DartCore",
+		Pattern:   regexp.MustCompile(`\bRandom\s*\(\s*(?:\d+\s*)?\)`),
+		MatchType: detection.MatchConstructor,
+		Extract: func(match []string, loc model.DetectionLocation) []model.INode {
+			algo := model.NewAlgorithm("dart:math Random", model.PrimitivePRNG, loc)
 			algo.AddFunction(model.FuncGenerate)
 			return []model.INode{algo}
 		},
